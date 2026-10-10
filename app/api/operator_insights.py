@@ -69,7 +69,7 @@ async def overview(
     usage = await UsageStore(redis).usage(days)
     cost, unpriced = _priced(pricing, usage["rows"])
     prev_usage = await UsageStore(redis).usage(days * 2)
-    prev_cost, _ = _priced(pricing, [r for r in prev_usage["rows"]])
+    prev_cost, _ = _priced(pricing, list(prev_usage["rows"]))
     # prev_usage covers both windows; subtract the current one.
     prev_cost = max(0.0, prev_cost - cost)
 
@@ -213,9 +213,13 @@ async def get_costs(
         total += cost
         by_day[row["day"]] = by_day.get(row["day"], 0.0) + cost
         m = by_model.setdefault((row["provider"], row["model"]), {"requests": 0, "tokens": 0, "cost": 0.0})
-        m["requests"] += row["requests"]; m["tokens"] += tokens; m["cost"] += cost
+        m["requests"] += row["requests"]
+        m["tokens"] += tokens
+        m["cost"] += cost
         a = by_account.setdefault(row["account_id"], {"requests": 0, "tokens": 0, "cost": 0.0})
-        a["requests"] += row["requests"]; a["tokens"] += tokens; a["cost"] += cost
+        a["requests"] += row["requests"]
+        a["tokens"] += tokens
+        a["cost"] += cost
 
     now = datetime.now(UTC)
     month_prefix = now.strftime("%Y-%m")

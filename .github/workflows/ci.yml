@@ -29,8 +29,8 @@ jobs:
     
     - name: Check code style with ruff
       run: |
-        ruff check app/ tests/
+        uv run ruff check app/ tests/
     
     - name: Run tests
       run: |
-        pytest
+        uv run pytest

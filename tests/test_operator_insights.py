@@ -29,9 +29,12 @@ async def op(redis):
 
 
 async def _record(redis, **kw):
-    base = dict(request_id="r", account_id="acc1", session_id=None, model="gpt-4o-mini",
-                status_code=200, outcome="success", latency_ms=120, stream=False, attempts=1,
-                prompt_tokens=1000, completion_tokens=500, provider="openai", key_id="k1")
+    base = {
+        "request_id": "r", "account_id": "acc1", "session_id": None, "model": "gpt-4o-mini",
+        "status_code": 200, "outcome": "success", "latency_ms": 120, "stream": False,
+        "attempts": 1, "prompt_tokens": 1000, "completion_tokens": 500,
+        "provider": "openai", "key_id": "k1",
+    }
     base.update(kw)
     await UsageStore(redis).record_request(**base)
 
