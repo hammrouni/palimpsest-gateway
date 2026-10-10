@@ -1,0 +1,89 @@
+"""Provider failure classification: a pure function, no I/O.
+
+``classify()`` is the only place that inspects a provider error to decide the
+key action and the client response. The failover loop acts on its result.
+"""
+from __future__ import annotations
+
+import re
+from dataclasses import dataclass
+from typing import TYPE_CHECKING
+
+from app.errors import PROVIDER_UNAVAILABLE, RATE_LIMIT
+
+if TYPE_CHECKING:
+    from app.provider.adapter import ProviderAttemptError
+
+_QUOTA_MARKER_RE = re.compile(r"(?i)(quota|rate\s?limit|insufficient|credit|billing|balance)")
+
+_IMAGE_MARKER_RE = re.compile(
+    r"(?i)(image|vision|visual|photo|picture|\.png|\.jpg|\.jpeg|\.gif|\.webp"
+    r"|base64|multimodal|image_url|cannot read|does not support image)"
+)
+
+_CONTEXT_MARKER_RE = re.compile(
+    r"(?i)(context[\s_-]?(length|window)|maximum context|too many tokens|prompt is too long)"
+)
+
+_CONTEXT_EXCEEDED_MESSAGE = (
+    "The conversation is too long for the selected model's context window; "
+    "start a new session or choose a model with a larger context."
+)
+_UPSTREAM_REJECTED_MESSAGE ="No upstream credential accepted the request."
+_INVALID_REQUEST_MESSAGE = (
+    "Request was rejected by the upstream; no provider details are disclosed."
+)
+_IMAGE_NOT_SUPPORTED_MESSAGE = (
+    "The selected model does not support image input; remove image attachments "
+    "or choose a vision-capable model."
+)
+
+
+@dataclass(frozen=True)
+class Classification:
+    """The disposition for one provider failure.
+
+    The ``client_*`` fields are rendered only for ``fatal``; other states make
+    the loop rotate, and exhaustion has its own messages.
+    """
+
+    state: str  # "transient" | "exhausted" | "rejected" | "fatal"
+    client_status: int
+    client_code: str
+    client_message: str
+
+
+def classify(error: ProviderAttemptError) -> Classification:
+    """Map one provider failure to its disposition.
+
+    401/403 mean the pool key itself was refused, not the client's request:
+    ``rejected`` takes the key out of rotation and tries the next one.
+    """
+    status = error.status_code
+    message = error.message or ""
+
+    if status == 429:
+        return Classification("transient", 503, "provider_unavailable", PROVIDER_UNAVAILABLE)
+    if status == 402:
+        return Classification("exhausted", 429, "rate_limit_exceeded", RATE_LIMIT)
+    if status == 400 and _QUOTA_MARKER_RE.search(message):
+        return Classification("exhausted", 429, "rate_limit_exceeded", RATE_LIMIT)
+    if status == 400 and _CONTEXT_MARKER_RE.search(message):
+        # Prompt size vs. the model's window: actionable, leaks no credentials.
+        return Classification(
+            "fatal", 400, "context_length_exceeded", _CONTEXT_EXCEEDED_MESSAGE
+        )
+    if status == 400 and _IMAGE_MARKER_RE.search(message):
+        # A capability mismatch, not a credential secret: the client can fix
+        # this by dropping images or picking a vision model. Safe to surface.
+        return Classification(
+            "fatal", 400, "unsupported_media_type", _IMAGE_NOT_SUPPORTED_MESSAGE
+        )
+    # 408 (a timeout) is retried like a 5xx: the next key may be quicker.
+    if status is None or status == 408 or 500 <= status <= 599:
+        return Classification("transient", 503, "provider_unavailable", PROVIDER_UNAVAILABLE)
+    if status in (401, 403):
+        return Classification("rejected", 502, "upstream_rejected", _UPSTREAM_REJECTED_MESSAGE)
+    if status == 400:
+        return Classification("fatal", 400, "invalid_request", _INVALID_REQUEST_MESSAGE)
+    return Classification("fatal", 502, "upstream_rejected", _UPSTREAM_REJECTED_MESSAGE)

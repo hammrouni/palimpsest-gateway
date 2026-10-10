@@ -1,0 +1,60 @@
+# Secrets and local configuration: .env holds a real provider API key and
+# must never enter the build context or an image layer.
+.env
+.env.*
+!.env.example
+
+# Version control
+.git
+.gitignore
+.github
+.gitattributes
+
+# Virtual environments and build output
+.venv
+venv
+env
+ENV
+*.egg-info/
+build/
+dist/
+
+# Caches
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.ruff_cache/
+.mypy_cache/
+.coverage
+.coverage.*
+htmlcov/
+
+# Archive and AI agent tooling
+archive
+.agents
+.claude
+.cline
+.opencode
+_bmad
+.kilo
+.kilocode
+
+# Tests are needed by the `dev` build target, but the runtime image never
+# copies them — the Dockerfile decides what lands in each stage.
+# tests
+
+# Docs, brand masters and local scratch (the app uses its own copies of the icons)
+docs
+logos
+draft.md
+_probe*.py
+_mockprobe*.py
+*.log
+
+# Compose files are applied from the host, not baked into the image
+docker-compose.yml
+docker-compose.dev.yml
+compose
+
+# Generated at runtime into a named volume
+.secrets

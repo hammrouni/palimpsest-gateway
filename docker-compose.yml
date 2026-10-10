@@ -1,0 +1,84 @@
+# Palimpsest Gateway — run it with:  docker compose up -d --wait
+#
+# No .env is required to start. The entrypoint generates and persists a master
+# key and a local operator key on first boot (see docker/entrypoint.sh), so the
+# API, dashboard and Operator API are usable immediately.
+#
+# Copy .env.example to .env to supply a real provider key or change any setting.
+
+services:
+  app:
+    build:
+      context: .
+      dockerfile: Dockerfile
+      target: runtime
+    # Loopback only by default: the gateway has no TLS and no rate limiting, so
+    # it should not be reachable from the network until you put a proxy in front.
+    # Set PALIMPSEST_BIND=0.0.0.0 in .env to expose it deliberately.
+    ports:
+      - "${PALIMPSEST_BIND:-127.0.0.1}:${PALIMPSEST_PORT:-8000}:8000"
+    environment:
+      PALIMPSEST_REDIS_URL: redis://redis:6379/0
+      # Secrets. Left empty on purpose: the entrypoint fills each one from the
+      # persisted secrets volume, or generates it on first boot. Setting these
+      # in .env overrides that and always wins.
+      PALIMPSEST_GATE_MASTER_KEY: "${PALIMPSEST_GATE_MASTER_KEY:-}"
+      PALIMPSEST_GATE_OPERATOR_KEY: "${PALIMPSEST_GATE_OPERATOR_KEY:-}"
+      # Print the operator key and dashboard URL at startup. Set false wherever
+      # container logs are collected or shared.
+      PALIMPSEST_LOG_OPERATOR_KEY: "${PALIMPSEST_LOG_OPERATOR_KEY:-true}"
+      # Only used to print the dashboard URL; the host port mapping is below.
+      PALIMPSEST_PORT: "${PALIMPSEST_PORT:-8000}"
+      # Provider — supplied by the operator, never hardcoded.
+      PALIMPSEST_PROVIDER_API_KEY: "${PALIMPSEST_PROVIDER_API_KEY:-}"
+      PALIMPSEST_PROVIDER_NAME: "${PALIMPSEST_PROVIDER_NAME:-openai}"
+      PALIMPSEST_ALLOW_SIGNUP: "${PALIMPSEST_ALLOW_SIGNUP:-true}"
+      PALIMPSEST_AUTO_CREATE_SESSIONS: "${PALIMPSEST_AUTO_CREATE_SESSIONS:-false}"
+      # Trust X-Forwarded-* only from your reverse proxy's address.
+      FORWARDED_ALLOW_IPS: "${FORWARDED_ALLOW_IPS:-127.0.0.1}"
+      PALIMPSEST_PROVIDER_MODEL: "${PALIMPSEST_PROVIDER_MODEL:-gpt-4o-mini}"
+      PALIMPSEST_PROVIDER_TIMEOUT: "${PALIMPSEST_PROVIDER_TIMEOUT:-60}"
+      # No cross-origin access by default — the dashboard is same-origin and
+      # non-browser clients ignore CORS. Set PALIMPSEST_CORS_ORIGINS to a JSON
+      # array (e.g. '["http://localhost:3000"]') if a browser app on another
+      # origin needs to call the gateway.
+      PALIMPSEST_CORS_ORIGINS: "${PALIMPSEST_CORS_ORIGINS:-[]}"
+      PALIMPSEST_VERBATIM_TURNS_N: "${PALIMPSEST_VERBATIM_TURNS_N:-4}"
+      PALIMPSEST_RETRY_BUDGET: "${PALIMPSEST_RETRY_BUDGET:-3}"
+      PALIMPSEST_COOLDOWN_SECONDS: "${PALIMPSEST_COOLDOWN_SECONDS:-60}"
+    depends_on:
+      redis:
+        condition: service_healthy
+    restart: unless-stopped
+    volumes:
+      # Generated secrets live here, not in the image and not in the repo. This
+      # is what makes the generated master key stable across restarts.
+      - gateway_secrets:/app/.secrets
+    healthcheck:
+      test: ["CMD", "curl", "-fsS", "http://localhost:8000/healthz"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      # The app must finish importing before /healthz answers.
+      start_period: 30s
+
+  redis:
+    # Pinned to a minor version so an upstream push cannot change behaviour.
+    image: redis:8.2-alpine
+    # Not published to the host: Redis has no auth here, and the app reaches it
+    # over the compose network. Uncomment to attach a debugger.
+    #
+    # ports:
+    #   - "127.0.0.1:6379:6379"
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    restart: unless-stopped
+    volumes:
+      - redis_data:/data
+
+volumes:
+  redis_data:
+  gateway_secrets:
