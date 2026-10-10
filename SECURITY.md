@@ -2,7 +2,7 @@
 
 ## Reporting a Vulnerability
 
-To report a security vulnerability, please email the maintainers at [security@palimpsest.example.com](mailto:security@palimpsest.example.com).
+To report a security vulnerability, please email the maintainers at [hammrouni.khaled@gmail.com](mailto:hammrouni.khaled@gmail.com).
 
 ## Key Material and Prompts Handling
 
