@@ -17,7 +17,7 @@ These checks are also run automatically by continuous integration.
 
 ## Reporting Issues
 
-Please use the [issue tracker](https://github.com/palimpsest/palimpsest-gateway/issues) to report bugs or request features.
+Please use the [issue tracker](https://github.com/hammrouni/palimpsest-gateway/issues) to report bugs or request features.
 
 ## Pull Requests
 

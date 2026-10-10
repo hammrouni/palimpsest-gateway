@@ -1,7 +1,32 @@
-# Palimpsest Gateway
-Released under the [MIT license](LICENSE).
+<div align="center">
 
-[![CI](https://github.com/palimpsest/palimpsest-gateway/actions/workflows/ci.yml/badge.svg)](https://github.com/palimpsest/palimpsest-gateway/actions/workflows/ci.yml)
+<picture>
+  <source media="(prefers-color-scheme: dark)" srcset="logos/logo-full-light-800.png">
+  <img src="logos/logo-full-800.png" alt="Palimpsest Gateway" width="420">
+</picture>
+
+### One OpenAI-compatible endpoint in front of all your LLM keys.
+Pool OpenAI, Anthropic, Gemini and OpenRouter keys. Fail over automatically. Keep every conversation going.
+
+[![CI](https://github.com/hammrouni/palimpsest-gateway/actions/workflows/ci.yml/badge.svg)](https://github.com/hammrouni/palimpsest-gateway/actions/workflows/ci.yml)
+[![License: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
+[![Python 3.11 | 3.12](https://img.shields.io/badge/python-3.11%20%7C%203.12-3776AB?logo=python&logoColor=white)](pyproject.toml)
+[![FastAPI](https://img.shields.io/badge/FastAPI-009688?logo=fastapi&logoColor=white)](https://fastapi.tiangolo.com)
+[![Redis](https://img.shields.io/badge/Redis-DC382D?logo=redis&logoColor=white)](https://redis.io)
+[![Docker Compose](https://img.shields.io/badge/docker-compose-2496ED?logo=docker&logoColor=white)](docker-compose.yml)
+[![OpenAI compatible](https://img.shields.io/badge/API-OpenAI%20compatible-412991?logo=openai&logoColor=white)](#api-reference)
+[![Self-hosted](https://img.shields.io/badge/self--hosted-yes-2B8AE6)](#quick-start)
+
+[Quick start](#quick-start) ·
+[How it works](#how-a-request-flows) ·
+[Features](#features) ·
+[Dashboard](#operator-dashboard) ·
+[User Guide](docs/USER_GUIDE.md) ·
+[API reference](#api-reference)
+
+</div>
+
+---
 
 **A self-hosted, OpenAI-compatible endpoint in front of the LLM provider keys you own.** Your apps talk to Palimpsest Gateway exactly as they would talk to OpenAI. Behind it, the gateway spreads requests over a pool of keys (OpenAI, Anthropic, Google Gemini, OpenRouter), moves on to another key when one hits its limit or fails, and keeps each user's conversation going across the switch.
 
@@ -93,7 +118,7 @@ If you do not want to use Docker, [the User Guide](docs/USER_GUIDE.md#without-co
 ### 1. Clone
 
 ```bash
-git clone https://github.com/palimpsest/palimpsest-gateway.git
+git clone https://github.com/hammrouni/palimpsest-gateway.git
 cd palimpsest-gateway
 ```
 
@@ -415,6 +440,6 @@ Report vulnerabilities privately to the maintainers rather than in a public issu
 
 ## Need help?
 
-- Report bugs / ask questions via [GitHub Issues](https://github.com/palimpsest/palimpsest-gateway/issues)
+- Report bugs / ask questions via [GitHub Issues](https://github.com/hammrouni/palimpsest-gateway/issues)
 - Private vulnerability reports: send an email to the maintainers at `contact@palimpsest.com`
 

@@ -40,9 +40,9 @@ dev = [
 ]
 
 [project.urls]
-Homepage = "https://github.com/palimpsest/palimpsest-gateway"
-Repository = "https://github.com/palimpsest/palimpsest-gateway"
-Issues = "https://github.com/palimpsest/palimpsest-gateway/issues"
+Homepage = "https://github.com/hammrouni/palimpsest-gateway"
+Repository = "https://github.com/hammrouni/palimpsest-gateway"
+Issues = "https://github.com/hammrouni/palimpsest-gateway/issues"
 
 [build-system]
 # setuptools >= 77 is required for the PEP 639 SPDX `license` string form.
