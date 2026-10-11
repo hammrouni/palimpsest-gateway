@@ -1,0 +1,353 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Palimpsest Gateway — One OpenAI-compatible endpoint for all your LLM keys</title>
+<meta name="description" content="Self-hosted, OpenAI-compatible gateway. Pool OpenAI, Anthropic, Gemini and OpenRouter keys, fail over automatically, and keep every conversation going. MIT licensed.">
+<meta name="theme-color" content="#0d1a20">
+<link rel="canonical" href="https://hammrouni.github.io/palimpsest-gateway/">
+<meta property="og:type" content="website">
+<meta property="og:title" content="Palimpsest Gateway — One OpenAI-compatible endpoint for all your LLM keys">
+<meta property="og:description" content="Pool provider keys, fail over automatically, keep conversations going. Self-hosted and MIT licensed.">
+<meta property="og:image" content="https://hammrouni.github.io/palimpsest-gateway/assets/icon-512.png">
+<meta name="twitter:card" content="summary">
+<link rel="icon" href="assets/favicon.ico" sizes="48x48">
+<link rel="icon" href="assets/icon-32.png" type="image/png" sizes="32x32">
+<link rel="apple-touch-icon" href="assets/apple-touch-icon.png">
+<style>
+  :root {
+    --bg: #0d1a20;
+    --bg-2: #132630;
+    --bg-3: #0a141a;
+    --line: rgba(160, 200, 220, 0.16);
+    --text: #e8f0f4;
+    --dim: #8fa8b4;
+    --red: #f23d5c;
+    --blue: #2b86e6;
+    --cyan: #4cc3e8;
+    --orange: #ff9f0a;
+    --paper: #f5f8fa;
+    --paper-text: #182b32;
+    --mono: ui-monospace, "SFMono-Regular", Menlo, Consolas, monospace;
+    --sans: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+  }
+  * { box-sizing: border-box; }
+  html { scroll-behavior: smooth; color-scheme: dark; }
+  body {
+    margin: 0; background: var(--bg); color: var(--text);
+    font: 16px/1.65 var(--sans); -webkit-font-smoothing: antialiased;
+  }
+  a { color: var(--cyan); }
+  a:focus-visible, button:focus-visible { outline: 2px solid var(--cyan); outline-offset: 3px; }
+  .wrap { max-width: 1040px; margin: 0 auto; padding: 0 24px; }
+  h1, h2, h3 { margin: 0; line-height: 1.2; letter-spacing: -.01em; }
+  code { font-family: var(--mono); font-size: .9em; background: rgba(160,200,220,.08); padding: 1px 6px; border-radius: 4px; }
+
+  /* header */
+  .top { position: sticky; top: 0; z-index: 10; background: rgba(13,26,32,.8); backdrop-filter: blur(8px); border-bottom: 1px solid var(--line); }
+  .top .wrap { display: flex; align-items: center; justify-content: space-between; gap: 16px; padding-top: 12px; padding-bottom: 12px; flex-wrap: wrap; }
+  .brand { display: flex; align-items: center; gap: 10px; color: var(--text); text-decoration: none; font-weight: 600; }
+  .brand img { width: 30px; height: 30px; }
+  .links { display: flex; align-items: center; gap: 22px; font-size: 14px; flex-wrap: wrap; }
+  .links a { color: var(--dim); text-decoration: none; }
+  .links a:hover { color: var(--text); }
+  .links .gh { color: var(--text); border: 1px solid var(--line); border-radius: 6px; padding: 6px 12px; }
+  .links .gh:hover { border-color: var(--cyan); }
+  @media (max-width: 640px) {
+    .top .wrap { flex-wrap: nowrap; }
+    .links a:not(.gh) { display: none; }
+  }
+  section[id] { scroll-margin-top: 64px; }
+
+  /* hero */
+  .hero { padding: 80px 0 56px; text-align: center; }
+  .hero .logo { width: min(100%, 440px); height: auto; margin: 0 auto 36px; display: block; }
+  .kicker { font-family: var(--mono); font-size: 12px; letter-spacing: .12em; text-transform: uppercase; color: var(--cyan); margin: 0 0 14px; }
+  .hero h1 { font-size: clamp(2rem, 5vw, 3.2rem); max-width: 18ch; margin: 0 auto 18px; }
+  .hero h1 em { font-style: normal; color: var(--red); }
+  .lede { color: var(--dim); font-size: 1.1rem; max-width: 640px; margin: 0 auto 30px; }
+  .actions { display: flex; flex-wrap: wrap; gap: 12px; justify-content: center; }
+  .btn { display: inline-block; padding: 11px 20px; border-radius: 5px; text-decoration: none; font-weight: 600; font-size: 15px; border: 1px solid var(--line); color: var(--text); transition: border-color .15s, background .15s; }
+  .btn:hover { border-color: var(--cyan); }
+  .btn.primary { background: var(--blue); border-color: var(--blue); color: #fff; }
+  .btn.primary:hover { background: #4a9bf0; border-color: #4a9bf0; }
+  .badges { display: flex; flex-wrap: wrap; gap: 8px 22px; justify-content: center; list-style: none; padding: 0; margin: 28px 0 0; }
+  .badges li { position: relative; padding-left: 14px; font-size: 13.5px; color: var(--dim); }
+  .badges li::before { content: ""; position: absolute; left: 0; top: .6em; width: 6px; height: 6px; border-radius: 50%; background: var(--red); }
+
+  /* sections */
+  section { padding: 64px 0; border-top: 1px solid var(--line); }
+  .sec-head { margin-bottom: 36px; max-width: 640px; }
+  .sec-head h2 { font-size: clamp(1.5rem, 3vw, 2rem); margin-bottom: 10px; }
+  .sec-head p { color: var(--dim); margin: 0; }
+
+  /* flow */
+  .flow { display: flex; align-items: stretch; gap: 0; flex-wrap: wrap; justify-content: center; }
+  .node { flex: 1 1 200px; background: var(--bg-2); border: 1px solid var(--line); border-radius: 6px; padding: 18px 20px; }
+  .node h3 { font-size: 1rem; margin-bottom: 6px; }
+  .node p { margin: 0; color: var(--dim); font-size: 14px; }
+  .node.core { border-color: var(--blue); }
+  .arrow { flex: 0 0 36px; display: flex; align-items: center; justify-content: center; color: var(--dim); font-family: var(--mono); }
+  @media (max-width: 760px) { .arrow { flex-basis: 100%; height: 28px; transform: rotate(90deg); } }
+
+  .steps { counter-reset: s; list-style: none; padding: 0; margin: 48px 0 0; display: grid; grid-template-columns: repeat(3, 1fr); gap: 0 40px; }
+  .steps li { counter-increment: s; padding: 18px 0 22px; border-top: 1px solid var(--line); color: var(--dim); font-size: 15px; }
+  .steps li::before { content: "0" counter(s); display: block; font: 12px/1 var(--mono); color: var(--red); margin-bottom: 10px; }
+  .steps li b { display: block; color: var(--text); font-weight: 600; margin-bottom: 2px; }
+  @media (max-width: 860px) { .steps { grid-template-columns: repeat(2, 1fr); } }
+  @media (max-width: 560px) { .steps { grid-template-columns: 1fr; } }
+
+  /* features: flat list, no boxes */
+  .feature-list { display: grid; grid-template-columns: repeat(2, 1fr); gap: 0 56px; margin: 0; }
+  .feature-list > div { padding: 20px 0; border-top: 1px solid var(--line); }
+  .feature-list dt { font-weight: 600; margin-bottom: 4px; }
+  .feature-list dd { margin: 0; color: var(--dim); font-size: 15px; }
+  @media (max-width: 720px) { .feature-list { grid-template-columns: 1fr; } }
+
+  /* hero terminal */
+  .hero-panel { max-width: 680px; margin: 44px auto 0; text-align: left; border: 1px solid var(--line); border-radius: 8px; background: var(--bg-2); overflow: hidden; }
+  .panel-chrome { display: flex; gap: 6px; padding: 10px 12px; background: var(--bg-3); border-bottom: 1px solid var(--line); }
+  .panel-chrome span { width: 9px; height: 9px; border-radius: 50%; background: var(--line); }
+  .panel-body { margin: 0; padding: 16px 20px 20px; font: 12.5px/1.75 var(--mono); color: var(--dim); overflow-x: auto; white-space: pre; }
+  .panel-body .p { color: var(--text); }
+  .panel-body .bad { color: var(--red); }
+  .panel-body .ok { color: var(--cyan); }
+  @media (max-width: 640px) {
+    .hero { padding: 48px 0 40px; }
+    .panel-body { font-size: 11px; padding: 14px; }
+    section { padding: 48px 0; }
+  }
+
+  /* table */
+  .spec { width: 100%; border-collapse: collapse; }
+  .spec tr { border-top: 1px solid var(--line); }
+  .spec tr:last-child { border-bottom: 1px solid var(--line); }
+  .spec th, .spec td { text-align: left; padding: 14px 0; vertical-align: top; font-weight: 400; }
+  .spec th { font-family: var(--mono); font-size: 12px; letter-spacing: .06em; text-transform: uppercase; color: var(--cyan); width: 200px; padding-right: 20px; }
+  .spec td { color: var(--dim); }
+  @media (max-width: 620px) { .spec th, .spec td { display: block; width: auto; padding: 4px 0; } .spec th { padding-top: 14px; } .spec td { padding-bottom: 14px; } }
+
+  /* code */
+  .term { margin: 0 0 22px; border-radius: 10px; overflow: hidden; border: 1px solid var(--line); }
+  .term-bar { display: flex; justify-content: space-between; align-items: center; background: var(--bg-3); padding: 8px 14px; font: 12px var(--mono); color: var(--dim); border-bottom: 1px solid var(--line); }
+  .term pre { margin: 0; padding: 18px; background: var(--paper); color: var(--paper-text); overflow-x: auto; font: 13.5px/1.65 var(--mono); }
+  .copy-btn { background: none; border: 1px solid var(--line); color: var(--dim); font: 12px var(--mono); padding: 3px 10px; border-radius: 4px; cursor: pointer; }
+  .copy-btn:hover { color: var(--text); border-color: var(--dim); }
+  .copy-btn.copied { color: var(--cyan); border-color: var(--cyan); }
+  .step-title { font-size: 1rem; margin: 26px 0 10px; }
+  .step-title span { color: var(--red); font-family: var(--mono); margin-right: 8px; }
+  .note { border-left: 3px solid var(--orange); background: rgba(255,159,10,.08); padding: 14px 18px; border-radius: 0 8px 8px 0; color: var(--dim); font-size: 15px; margin-top: 28px; }
+  .note b { color: var(--orange); }
+
+  /* cta + footer */
+  .cta { text-align: center; padding: 24px 0; }
+  .cta h2 { font-size: clamp(1.4rem, 3vw, 1.9rem); margin-bottom: 20px; }
+  footer { border-top: 1px solid var(--line); padding: 28px 0 44px; font-size: 13px; color: var(--dim); }
+  footer .wrap { display: flex; justify-content: space-between; gap: 12px; flex-wrap: wrap; }
+  footer a { color: var(--dim); }
+  footer a:hover { color: var(--text); }
+  @media (prefers-reduced-motion: reduce) { html { scroll-behavior: auto; } }
+</style>
+</head>
+<body>
+
+<header class="top">
+  <div class="wrap">
+    <a class="brand" href="#top"><img src="assets/icon-mark-transparent.png" alt="" width="30" height="30"><span>Palimpsest Gateway</span></a>
+    <nav class="links">
+      <a href="#how">How it works</a>
+      <a href="#features">Features</a>
+      <a href="#quickstart">Quick start</a>
+      <a href="#keys">Keys</a>
+      <a class="gh" href="https://github.com/hammrouni/palimpsest-gateway" target="_blank" rel="noopener">GitHub</a>
+    </nav>
+  </div>
+</header>
+
+<main id="top">
+  <section class="hero" style="border-top:none">
+    <div class="wrap">
+      <img class="logo" src="assets/logo-full-light-800.png" alt="Palimpsest Gateway" width="440" height="110">
+      <p class="kicker">Self-hosted · OpenAI-compatible</p>
+      <h1>One endpoint in front of <em>all your LLM keys.</em></h1>
+      <p class="lede">Pool OpenAI, Anthropic, Gemini and OpenRouter keys. Fail over automatically. Keep every conversation going across the switch.</p>
+      <div class="actions">
+        <a class="btn primary" href="#quickstart">Run it locally</a>
+        <a class="btn" href="https://github.com/hammrouni/palimpsest-gateway" target="_blank" rel="noopener">★ Star on GitHub</a>
+      </div>
+      <ul class="badges">
+        <li>MIT licensed</li>
+        <li>Python 3.11 | 3.12</li>
+        <li>FastAPI + Redis</li>
+        <li>Docker Compose</li>
+      </ul>
+      <div class="hero-panel" aria-label="Example gateway log">
+        <div class="panel-chrome"><span></span><span></span><span></span></div>
+<pre class="panel-body"><span class="p">POST /v1/chat/completions</span>  model=gpt-4o-mini  session=my-chat
+  key openai-free-1   <span class="bad">429 rate limited</span>   rest 60s
+  key openai-free-2   <span class="bad">quota spent</span>       wait for reset
+  key openai-paid     <span class="ok">200 ok</span>           history carried over
+<span class="ok">reply returned</span> · 1 request counted · 0 changes in your app</pre>
+      </div>
+    </div>
+  </section>
+
+  <section id="how">
+    <div class="wrap">
+      <div class="sec-head">
+        <h2>Your apps see one URL. Behind it, a pool.</h2>
+        <p>Apps talk to the gateway exactly as they would talk to OpenAI. Provider keys never leave it.</p>
+      </div>
+      <div class="flow">
+        <div class="node"><h3>Your app</h3><p>Any OpenAI client, with a gateway key <code>pgw_live_…</code></p></div>
+        <div class="arrow" aria-hidden="true">→</div>
+        <div class="node core"><h3>Palimpsest Gateway</h3><p>Admit, load history, pick a key, fail over, meter usage.</p></div>
+        <div class="arrow" aria-hidden="true">→</div>
+        <div class="node"><h3>Providers</h3><p>OpenAI, Anthropic, Google Gemini, OpenRouter.</p></div>
+      </div>
+      <ol class="steps">
+        <li><b>Authenticate.</b> The app sends its own gateway key, never a provider key.</li>
+        <li><b>Admit.</b> Daily cap and remaining pool capacity are checked.</li>
+        <li><b>Load context.</b> With <code>X-Session-ID</code>, stored history is added for you.</li>
+        <li><b>Choose a key.</b> Only active keys that serve the model and aren't resting.</li>
+        <li><b>Fail over.</b> Rate limit, outage or bad key: retry on the next key, same call.</li>
+        <li><b>Answer and record.</b> Reply in OpenAI format, turn saved, usage counted once.</li>
+      </ol>
+    </div>
+  </section>
+
+  <section id="features">
+    <div class="wrap">
+      <div class="sec-head">
+        <h2>Features</h2>
+        <p>Everything needed to run a shared key pool without every app re-implementing it.</p>
+      </div>
+      <dl class="feature-list">
+        <div><dt>Drop-in OpenAI API</dt><dd><code>/v1/chat/completions</code> with streaming and tool calls, plus <code>/v1/models</code>.</dd></div>
+        <div><dt>Multi-provider pool</dt><dd>Keys with optional request cap, token budget, reset schedule and label.</dd></div>
+        <div><dt>Automatic failover</dt><dd>Rate limits, outages and exhausted quotas are retried within a fixed budget. 503 with a retry hint when nothing is left.</dd></div>
+        <div><dt>Conversation memory</dt><dd>Per-user session history, so clients send only the new message and context survives a switch.</dd></div>
+        <div><dt>Fairness controls</dt><dd>Per-user daily caps and a pool low-water mark that throttles before the pool runs dry.</dd></div>
+        <div><dt>Keys stay private</dt><dd>Encrypted at rest, never returned after creation. Users only see generic errors and stable codes.</dd></div>
+        <div><dt>Operator dashboard</dt><dd>Key health, usage, failovers, users, sessions, latency, costs, alerts and audit trail.</dd></div>
+        <div><dt>Costs from your prices</dt><dd>You enter per-model prices and a monthly budget. Nothing bundled, so nothing goes stale.</dd></div>
+        <div><dt>Alerts and exports</dt><dd>Low capacity, key problems, error rate, optional webhook. CSV export for usage, requests and audit.</dd></div>
+        <div><dt>Observable</dt><dd>One structured JSON log line per request and a Prometheus metrics endpoint.</dd></div>
+      </dl>
+    </div>
+  </section>
+
+  <section id="quickstart">
+    <div class="wrap">
+      <div class="sec-head">
+        <h2>Quick start</h2>
+        <p>Docker with Compose v2 is the only prerequisite. No <code>.env</code>, no manual key generation.</p>
+      </div>
+
+      <h3 class="step-title"><span>01</span>Clone and run</h3>
+      <div class="term">
+        <div class="term-bar"><span>shell</span><button class="copy-btn" data-copy="git clone https://github.com/hammrouni/palimpsest-gateway.git&#10;cd palimpsest-gateway&#10;docker compose up -d --wait" type="button">Copy</button></div>
+<pre>git clone https://github.com/hammrouni/palimpsest-gateway.git
+cd palimpsest-gateway
+docker compose up -d --wait</pre>
+      </div>
+      <p style="color:var(--dim);margin:0">API at <code>localhost:8000</code>, dashboard at <code>/dashboard/</code>, docs at <code>/docs</code>. First boot generates and persists a master key and an operator key.</p>
+
+      <h3 class="step-title"><span>02</span>Add a provider key</h3>
+      <div class="term">
+        <div class="term-bar"><span>shell</span><button class="copy-btn" data-copy="echo 'PALIMPSEST_PROVIDER_API_KEY=sk-your-key' >> .env&#10;docker compose up -d" type="button">Copy</button></div>
+<pre>echo 'PALIMPSEST_PROVIDER_API_KEY=sk-your-key' &gt;&gt; .env
+docker compose up -d</pre>
+      </div>
+      <p style="color:var(--dim);margin:0">Or add pool keys in the dashboard. Read the operator key with <code>docker compose exec app cat /app/.secrets/operator_key</code>.</p>
+
+      <h3 class="step-title"><span>03</span>Create a user and call it</h3>
+      <div class="term">
+        <div class="term-bar"><span>app.py</span><button class="copy-btn" data-copy="from openai import OpenAI&#10;&#10;client = OpenAI(base_url=&quot;http://localhost:8000/v1&quot;, api_key=&quot;pgw_live_...&quot;)&#10;reply = client.chat.completions.create(&#10;    model=&quot;gpt-4o-mini&quot;,  # a model one of your pool keys serves&#10;    messages=[{&quot;role&quot;: &quot;user&quot;, &quot;content&quot;: &quot;Hello&quot;}],&#10;)&#10;print(reply.choices[0].message.content)" type="button">Copy</button></div>
+<pre>from openai import OpenAI
+
+client = OpenAI(base_url="http://localhost:8000/v1", api_key="pgw_live_...")
+reply = client.chat.completions.create(
+    model="gpt-4o-mini",  # a model one of your pool keys serves
+    messages=[{"role": "user", "content": "Hello"}],
+)
+print(reply.choices[0].message.content)</pre>
+      </div>
+      <p style="color:var(--dim);margin:0">Create the user under <b>Users → + New user</b>; the key is shown once. Send the same <code>X-Session-ID</code> header to keep a conversation going server-side.</p>
+
+      <div class="note"><b>Security.</b> The gateway binds <code>127.0.0.1:8000</code> by default and has no TLS or IP rate limiting. Before exposing it, set <code>PALIMPSEST_BIND=0.0.0.0</code> behind a TLS reverse proxy, with <code>PALIMPSEST_ALLOW_SIGNUP=false</code> and a user daily cap.</div>
+    </div>
+  </section>
+
+  <section id="keys">
+    <div class="wrap">
+      <div class="sec-head">
+        <h2>Paid keys, free keys, or both</h2>
+        <p>The gateway tries keys that still have requests left first, most room first. Uncapped keys come last. Give limited keys a cap and they are used before the fallback.</p>
+      </div>
+      <table class="spec">
+        <tr><th>Paid keys</th><td>Add without a cap, or with a safety cap. Enter prices and a monthly budget under Costs, and turn on Alerts.</td></tr>
+        <tr><th>Free-tier keys</th><td>Set <code>daily_cap</code> at or below the published allowance with the matching reset period. Spent keys are skipped until reset.</td></tr>
+        <tr><th>Not a model host</th><td>It forwards to providers and runs no models.</td></tr>
+        <tr><th>Not a loophole</th><td>It uses only the keys you give it, within each key's limits. It does not lift provider limits.</td></tr>
+        <tr><th>Capacity</th><td>If every key is out of quota, clients get a <code>503</code> with <code>Retry-After</code>.</td></tr>
+        <tr><th>License</th><td>MIT</td></tr>
+      </table>
+    </div>
+  </section>
+
+  <section>
+    <div class="wrap">
+      <div class="cta">
+        <h2>Stop handling 429s in every app.</h2>
+        <div class="actions">
+          <a class="btn primary" href="https://github.com/hammrouni/palimpsest-gateway" target="_blank" rel="noopener">View on GitHub</a>
+          <a class="btn" href="https://github.com/hammrouni/palimpsest-gateway/blob/main/docs/USER_GUIDE.md" target="_blank" rel="noopener">User guide</a>
+          <a class="btn" href="https://github.com/hammrouni/palimpsest-gateway/blob/main/docs/DEVELOPMENT.md" target="_blank" rel="noopener">Development</a>
+        </div>
+      </div>
+    </div>
+  </section>
+</main>
+
+<footer>
+  <div class="wrap">
+    <span>Palimpsest Gateway · MIT License</span>
+    <span>
+      <a href="https://github.com/hammrouni/palimpsest-gateway" target="_blank" rel="noopener">GitHub</a> ·
+      <a href="https://github.com/hammrouni/palimpsest-gateway/issues" target="_blank" rel="noopener">Report an issue</a> ·
+      <a href="https://github.com/hammrouni/palimpsest-gateway/blob/main/LICENSE" target="_blank" rel="noopener">License</a>
+    </span>
+  </div>
+</footer>
+
+<script>
+  document.querySelectorAll('.copy-btn').forEach(function (btn) {
+    btn.addEventListener('click', function () {
+      var text = btn.getAttribute('data-copy');
+      function done() {
+        btn.textContent = 'Copied';
+        btn.classList.add('copied');
+        setTimeout(function () { btn.textContent = 'Copy'; btn.classList.remove('copied'); }, 1500);
+      }
+      function fallback() {
+        var ta = document.createElement('textarea');
+        ta.value = text;
+        ta.style.position = 'fixed';
+        ta.style.opacity = '0';
+        document.body.appendChild(ta);
+        ta.select();
+        try { document.execCommand('copy'); done(); } catch (e) {}
+        document.body.removeChild(ta);
+      }
+      if (navigator.clipboard && window.isSecureContext) {
+        navigator.clipboard.writeText(text).then(done, fallback);
+      } else {
+        fallback();
+      }
+    });
+  });
+</script>
+</body>
+</html>
