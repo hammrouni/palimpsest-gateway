@@ -1,0 +1,106 @@
+[project]
+name = "palimpsest-gateway"
+version = "2.1.0"
+description = "Self-hosted OpenAI-compatible gateway that pools your own LLM provider keys, with failover and session continuity"
+readme = "README.md"
+requires-python = ">=3.11"
+license = "MIT"
+authors = [
+    {name = "Palimpsest Team", email = "contact@palimpsest.com"}
+]
+keywords = ["llm", "gateway", "openai", "api", "failover", "proxy", "redis", "fastapi"]
+classifiers = [
+    "Development Status :: 4 - Beta",
+    "Intended Audience :: Developers",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Topic :: Internet :: Proxy Servers",
+]
+
+dependencies = [
+    "fastapi>=0.109.0",
+    "uvicorn>=0.27.0",
+    "pydantic>=2.5.0",
+    "pydantic-settings>=2.0.0",
+    "redis>=5.0.0",
+    "litellm>=1.40.0",
+    "fastuuid>=0.14.0",
+    "cryptography==50.0.0",
+    "httpx>=0.26.0",
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest>=7.4.0",
+    "pytest-asyncio>=0.23.0",
+    "httpx>=0.26.0",
+    "ruff>=0.1.0",
+    "fakeredis[lua]>=2.21,<3",
+]
+
+[project.urls]
+Homepage = "https://github.com/hammrouni/palimpsest-gateway"
+Repository = "https://github.com/hammrouni/palimpsest-gateway"
+Issues = "https://github.com/hammrouni/palimpsest-gateway/issues"
+
+[build-system]
+# setuptools >= 77 is required for the PEP 639 SPDX `license` string form.
+requires = ["setuptools>=77.0.0", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[tool.setuptools.packages.find]
+where = ["."]
+include = ["app*"]
+
+[tool.setuptools.package-data]
+# Neither the settlement Lua scripts nor the dashboard bundle are importable
+# Python modules — they are read from disk at runtime (see
+# app/settlement/settle.py and app/api/dashboard.py). Without these
+# declarations a non-editable install ships without them, and settlement
+# cannot find its scripts at all.
+"app.settlement" = ["*.lua"]
+"app" = ["static/dashboard/*", "static/dashboard/icons/*"]
+
+[tool.ruff]
+target-version = "py311"
+line-length = 88
+
+[tool.ruff.lint]
+select = [
+    "E",      # pycodestyle errors
+    "W",      # pycodestyle warnings
+    "F",      # Pyflakes
+    "I",      # isort
+    "B",      # flake8-bugbear
+    "C4",     # flake8-comprehensions
+    "UP",     # pyupgrade
+]
+ignore = [
+    "E501",  # line too long (handled by formatter)
+    "B008",  # function call in argument defaults
+]
+
+[tool.ruff.lint.isort]
+known-first-party = ["app"]
+force-single-line = false
+
+[tool.pytest.ini_options]
+minversion = "7.0"
+testpaths = ["tests"]
+asyncio_mode = "auto"
+addopts = "-ra -q"
+
+[tool.coverage.run]
+source = ["app"]
+omit = ["tests/*"]
+
+[tool.coverage.report]
+exclude_lines = [
+    "pragma: no cover",
+    "def __repr__",
+    "raise NotImplementedError",
+    "if TYPE_CHECKING:",
+    "if __name__ == .__main__.:",
+    "if settings.DEBUG:",
+]

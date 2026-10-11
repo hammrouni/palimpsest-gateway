@@ -1,0 +1,56 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Palimpsest Gateway — Operator Dashboard</title>
+<link rel="icon" href="icons/favicon.ico" sizes="48x48">
+<link rel="icon" href="icons/icon-32.png" type="image/png" sizes="32x32">
+<link rel="icon" href="icons/icon-16.png" type="image/png" sizes="16x16">
+<link rel="apple-touch-icon" href="icons/apple-touch-icon.png">
+<link rel="manifest" href="icons/site.webmanifest">
+<meta name="theme-color" content="#182b32">
+<link rel="stylesheet" href="styles.css">
+</head>
+<body>
+
+<div id="login" class="login" hidden>
+  <form id="login-form" class="card" novalidate>
+    <h1 class="login-logo">
+      <img src="icons/logo-full-400.png" srcset="icons/logo-full-800.png 2x" alt="Palimpsest Gateway" width="400" height="74">
+    </h1>
+    <p class="subtitle">Operator dashboard</p>
+    <label for="operator-key">Operator key</label>
+    <input
+      id="operator-key"
+      name="operator-key"
+      type="password"
+      placeholder="pgw_opk_..."
+      autocomplete="current-password"
+      autocapitalize="off"
+      autocorrect="off"
+      spellcheck="false"
+      required>
+    <button type="submit" id="login-submit" class="primary">Sign in</button>
+    <p id="login-error" class="error" role="alert" hidden></p>
+  </form>
+</div>
+
+<div id="app" class="app" hidden>
+  <header class="topbar">
+    <span class="brand"><img src="icons/icon-64.png" alt="" width="28" height="28">Palimpsest Gateway</span>
+    <button type="button" id="logout" class="ghost">Sign out</button>
+  </header>
+  <div class="shell">
+    <nav id="nav" class="nav" aria-label="Dashboard sections"></nav>
+    <main id="view" class="view" tabindex="-1"></main>
+  </div>
+</div>
+
+<dialog id="modal" class="modal" aria-labelledby="modal-title"></dialog>
+
+<noscript><p class="noscript">The operator dashboard needs JavaScript enabled.</p></noscript>
+<script src="insights.js" defer></script>
+<script src="app.js" defer></script>
+</body>
+</html>

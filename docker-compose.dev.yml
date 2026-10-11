@@ -1,0 +1,30 @@
+# Development overlay — hot reload against your working tree.
+#
+#   docker compose -f docker-compose.yml -f docker-compose.dev.yml up
+#   (or simply: make dev)
+#
+# Your source is mounted over /app, so edits on the host are picked up by
+# uvicorn's reloader without rebuilding.
+
+services:
+  app:
+    build:
+      target: dev
+    volumes:
+      # /app is your working tree. Dependencies live in /opt/venv, so the
+      # mount shadows nothing, and the editable install resolves to it.
+      - .:/app
+    environment:
+      PALIMPSEST_REQUEST_LOG_PROMPTS: "true"
+    command:
+      - uvicorn
+      - app.main:app
+      - --host
+      - "0.0.0.0"
+      - --port
+      - "8000"
+      - --reload
+      - --reload-dir
+      - /app/app
+    # No fast restart in dev: uvicorn's reloader needs the process to stay up.
+    restart: "no"

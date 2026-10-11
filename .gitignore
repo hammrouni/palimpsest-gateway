@@ -1,0 +1,86 @@
+# --- Secrets and local configuration -------------------------------------
+# .env holds a real provider API key. It must never be committed.
+.env
+.env.*
+!.env.example
+
+# Generated master and operator keys (normally inside a Docker volume).
+.secrets/
+
+# --- Python ---------------------------------------------------------------
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+build/
+develop-eggs/
+dist/
+downloads/
+eggs/
+.eggs/
+lib/
+lib64/
+parts/
+sdist/
+var/
+wheels/
+*.egg-info/
+.installed.cfg
+*.egg
+MANIFEST
+
+# Virtual environments
+.venv/
+venv/
+env/
+ENV/
+
+# --- Test, lint and coverage caches ---------------------------------------
+.pytest_cache/
+.ruff_cache/
+.mypy_cache/
+.coverage
+.coverage.*
+coverage.xml
+htmlcov/
+.tox/
+.nox/
+.cache
+
+# --- Type checkers / IDEs -------------------------------------------------
+.mypy.ini
+.pyre/
+.pytype/
+.ruff.toml
+
+# --- OS / editor cruft ----------------------------------------------------
+.DS_Store
+Thumbs.db
+Desktop.ini
+*.swp
+*.swo
+*~
+.idea/
+.vscode/*
+!.vscode/extensions.json
+
+# --- Local planning material (never published) --------------------------
+/archive/
+
+# --- AI agent tooling (local development only) ----------------------------
+.agents/
+.claude/
+.cline/
+.opencode/
+_bmad/
+.kilo/
+.kilocode/
+
+# --- Local scratch --------------------------------------------------------
+_probe*.py
+_mockprobe*.py
+*.log
+# Browser tooling output and editor backups
+.playwright-mcp/
+*.bak
