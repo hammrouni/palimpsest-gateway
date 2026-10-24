@@ -43,8 +43,10 @@ class Settings(BaseSettings):
     provider_name: str = "openai"
     provider_model: str = "gpt-4o-mini"
     provider_api_key: str = ""
-    # Per-attempt provider timeout, in seconds.
-    provider_timeout: float = Field(default=60.0, gt=0)
+    # Per-attempt provider timeouts, in seconds.
+    provider_timeout: float = Field(default=60.0, gt=0)  # the failover loop stops at 2 x this
+    provider_connect_timeout: float = Field(default=10.0, gt=0)  # connect timeout
+    provider_read_timeout: float = Field(default=60.0, gt=0)  # first-byte / read timeout
 
     # How often each instance re-reads operator overrides from Redis. 0 disables.
     config_refresh_seconds: float = Field(default=5.0, ge=0)
@@ -72,7 +74,9 @@ class Settings(BaseSettings):
     usage_recent_max: int = Field(default=500, ge=10, le=10000)
 
     # Session lock contention: wait up to WAIT_MS (polling every POLL_MS), then 423.
-    session_lock_wait_ms: int = 2000
+    # Near the failover deadline (2 x provider_timeout), so a turn already in
+    # flight can finish before a second request on the session gets 423.
+    session_lock_wait_ms: int = 120000
     session_lock_poll_ms: int = 100
 
     # Stored turns re-sent verbatim to a replacement provider on failover.

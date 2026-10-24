@@ -5,13 +5,14 @@ from app.router.classify import Classification
 from app.router.exhaustion import PoolExhaustedError, render_exhausted, render_fatal
 
 
-def test_pool_exhausted_renders_503_with_headers():
+def test_pool_exhausted_renders_429_with_headers():
     next_reset = datetime(2026, 8, 26, 0, 0, tzinfo=UTC)
     error = PoolExhaustedError("pool_exhausted", next_reset, retry_count=0)
 
     rendered = render_exhausted(error, model="gpt-4o-mini")
 
-    assert rendered.status_code == 503
+    # Changed to 429 so clients that back off on 429 will wait properly
+    assert rendered.status_code == 429
     assert rendered.code == "pool_exhausted"
     assert "gpt-4o-mini" in rendered.message
     assert rendered.headers["X-Palimpsest-Next-Reset"] == "2026-08-26T00:00:00+00:00"

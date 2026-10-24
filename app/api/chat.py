@@ -173,12 +173,16 @@ def _merge_tool_calls(acc: dict[int, dict], deltas: list) -> None:
         entry["function"]["arguments"] += fn.get("arguments") or ""
 
 
-def _describe_stream_error(exc: Exception) -> str:
-    """``stream:<ExceptionType>[ <status>]``: enough to diagnose, nothing to leak."""
+def _describe_stream_error(exc: Exception) -> tuple[str, int | None]:
+    """The log label and the provider status (None if absent).
+
+    The label is ``stream:<ExceptionType>[ <status>]``. The message is not part
+    of it; the caller logs the message separately, after redaction.
+    """
     status = getattr(exc, "status_code", None)
-    return f"stream:{type(exc).__name__}" + (
+    return (f"stream:{type(exc).__name__}" + (
         f" {status}" if isinstance(status, int) else ""
-    )
+    ), status if isinstance(status, int) else None)
 
 
 @dataclass
@@ -562,7 +566,8 @@ async def _run_failover(
         rendered = turn.error(render_exhausted(exc, model=request.model))
         if exc.trace is not None:
             await turn.settle(exc.trace, rendered.status_code, quiet=True)
-        turn.log(rendered.status_code, "exhausted_503", trace=exc.trace)
+        outcome = "exhausted_429" if rendered.status_code == 429 else "exhausted_503"
+        turn.log(rendered.status_code, outcome, trace=exc.trace)
         raise rendered from exc
     except Exception as exc:
         raise await _unexpected_failure(turn, trace, exc) from exc
@@ -648,16 +653,20 @@ async def _stream_chunks(
         except Exception as exc:
             # The client gets a generic error; the cause (type and status,
             # never the message) goes to the log and the Requests page.
-            turn.stream_error = _describe_stream_error(exc)
+            stream_error, stream_status = _describe_stream_error(exc)
+            turn.stream_error = stream_error
             logger.warning(
-                "provider stream interrupted request_id=%s cause=%s detail=%s",
+                "provider stream interrupted request_id=%s cause=%s status=%s detail=%s",
                 turn.request_id,
-                turn.stream_error,
+                stream_error,
+                stream_status,
                 redact(str(getattr(exc, "message", exc)))[:300],
             )
             finalized = True
-            await turn.settle(trace, 200, quiet=True)
-            turn.log(200, "stream_interrupted", trace=trace, messages=current_messages)
+            # Use the actual provider status code if available, otherwise 502
+            settle_status = stream_status if stream_status and stream_status >= 400 else 502
+            await turn.settle(trace, settle_status, quiet=True)
+            turn.log(settle_status, "stream_interrupted", trace=trace, messages=current_messages)
             error = {
                 "error": {
                     "type": "api_error",

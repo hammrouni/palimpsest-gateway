@@ -3,6 +3,7 @@ import logging
 import os
 import pathlib
 
+import httpx
 import pytest
 from fakeredis.aioredis import FakeRedis
 from litellm.exceptions import (
@@ -14,6 +15,7 @@ from litellm.exceptions import (
 )
 
 import app.provider.adapter as adapter_module
+from app.config import get_settings
 from app.pool.models import KeyCreate, Provider
 from app.pool.registry import KeyNotFoundError, PoolRegistry
 from app.provider.adapter import CandidateGoneError, attempt
@@ -418,8 +420,52 @@ def test_no_retry_loop_in_adapter_module():
 
     tree = ast.parse(pathlib.Path("app/provider/adapter.py").read_text())
     for node in ast.walk(tree):
-        if isinstance(node, (ast.While, ast.AsyncFor, ast.For)):
+        if isinstance(node, (ast.While, ast.AsyncFor)):
+            raise AssertionError(f"retry loop found in adapter.py: {ast.dump(node)}")
+        # Allow for loops that are not retry loops (e.g., parameter filtering)
+        if isinstance(node, ast.For):
+            # Check if it's a retry loop or a parameter filtering loop
+            # Parameter filtering loops iterate over a tuple of param names
+            if (isinstance(node.iter, ast.Tuple) and
+                all(isinstance(elt, ast.Constant) and isinstance(elt.value, str) for elt in node.iter.elts)):
+                continue  # This is a parameter filtering loop, not a retry loop
             raise AssertionError(f"retry loop found in adapter.py: {ast.dump(node)}")
     assert not any(
         isinstance(node, ast.AsyncFor) for node in ast.walk(tree)
+    )
+
+
+# -- timeout: the value must be one litellm accepts ---------------------------
+
+
+@pytest.mark.asyncio
+async def test_attempt_passes_a_timeout_litellm_accepts(
+    registry: PoolRegistry, monkeypatch: pytest.MonkeyPatch
+):
+    from litellm.litellm_core_utils.completion_timeout import CompletionTimeout
+
+    record = await registry.create(
+        KeyCreate(provider=Provider.OPENAI, models=["gpt-4o-mini"], key="sk-timeout-test")
+    )
+    calls = []
+
+    async def fake_acompletion(**kwargs):
+        calls.append(kwargs)
+        return _FakeModelResponse()
+
+    monkeypatch.setattr(adapter_module, "acompletion", fake_acompletion)
+
+    await attempt(registry, record.id, "gpt-4o-mini", [{"role": "user", "content": "hi"}])
+
+    timeout = calls[0]["timeout"]
+    assert isinstance(timeout, httpx.Timeout)
+    assert timeout.connect == get_settings().provider_connect_timeout
+    assert timeout.read == get_settings().provider_read_timeout
+    # Resolving it the way litellm does must not raise (a tuple raised TypeError).
+    CompletionTimeout.resolve(
+        timeout,
+        {},
+        "openai",
+        global_timeout=None,
+        supports_httpx_timeout=lambda _provider: True,
     )

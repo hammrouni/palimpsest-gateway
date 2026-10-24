@@ -9,6 +9,7 @@ from dataclasses import dataclass
 
 from redis.asyncio import Redis
 
+from app.config import get_settings
 from app.session.locks import SessionLock
 from app.session.store import SessionStore
 
@@ -59,12 +60,18 @@ async def _renew_loop(lock: SessionLock, lock_key: str, token: str) -> None:
             logger.error("lock renewal failed for %s", lock_key, exc_info=True)
 
 
+def _get_wait_config() -> tuple[int, int]:
+    """Get session lock wait/poll config from settings."""
+    settings = get_settings()
+    return settings.session_lock_wait_ms, settings.session_lock_poll_ms
+
+
 async def acquire_turn_lock(
     redis: Redis,
     account_id: str,
     session_id: str,
-    wait_ms: int = 2000,
-    poll_ms: int = 100,
+    wait_ms: int | None = None,
+    poll_ms: int | None = None,
 ) -> TurnLock:
     """Acquire the session lock, polling for up to ``wait_ms``.
 
@@ -74,6 +81,9 @@ async def acquire_turn_lock(
     Raises:
         SessionBusy: Lock not acquired within wait_ms (caller should return 423)
     """
+    if wait_ms is None or poll_ms is None:
+        wait_ms, poll_ms = _get_wait_config()
+
     store = SessionStore(redis)
     lock = SessionLock(redis)
     lock_key = store._lock_key(account_id, session_id)
@@ -124,8 +134,8 @@ async def session_turn_guard(
     redis: Redis,
     account_id: str,
     session_id: str,
-    wait_ms: int = 2000,
-    poll_ms: int = 100,
+    wait_ms: int | None = None,
+    poll_ms: int | None = None,
 ):
     """Hold the session lock for the block, always releasing it.
 

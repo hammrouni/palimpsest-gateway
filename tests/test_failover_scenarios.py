@@ -129,9 +129,13 @@ async def test_provider_timeout_is_passed_to_every_call(registry, monkeypatch):
 
     monkeypatch.setattr(adapter_module, "acompletion", fake)
     monkeypatch.setattr(get_settings(), "provider_timeout", 12.5)
+    monkeypatch.setattr(get_settings(), "provider_connect_timeout", 10.0)
+    monkeypatch.setattr(get_settings(), "provider_read_timeout", 60.0)
     await adapter_module.attempt(registry, key_id, "m", MESSAGES)
 
-    assert seen["timeout"] == 12.5
+    assert isinstance(seen["timeout"], httpx.Timeout)
+    assert seen["timeout"].connect == 10.0
+    assert seen["timeout"].read == 60.0
 
 
 def test_every_provider_prefix_is_a_route_litellm_knows():

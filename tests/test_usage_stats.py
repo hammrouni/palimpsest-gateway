@@ -156,11 +156,11 @@ async def test_unserved_requests_do_not_grow_the_usage_counters(
         json={"model": "made-up-model", "messages": [{"role": "user", "content": "x"}]},
     )
     await drain()
-    assert resp.status_code == 503
+    assert resp.status_code == 429
 
     assert (await client.get("/operator/v1/usage", headers=operator_headers)).json()["rows"] == []
     recent = (await client.get("/operator/v1/requests", headers=operator_headers)).json()["data"]
-    assert recent[0]["outcome"] == "exhausted_503"
+    assert recent[0]["outcome"] == "exhausted_429"
 
 
 @pytest.mark.asyncio

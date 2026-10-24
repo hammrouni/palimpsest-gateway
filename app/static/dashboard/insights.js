@@ -145,11 +145,12 @@ function chartLegend(series) {
    [{ label, values }]; `labels` is the x axis, one per value. */
 function trendChart(labels, series, { kind = 'line', height = 190, format = fmtCompact } = {}) {
   const box = el('figure', 'chart');
-  const width = 640;
+  const aspectWidth = 800;
+  const aspectHeight = height;
   const pad = { left: 46, right: 10, top: 10, bottom: 24 };
-  const svg = svgEl('svg', { viewBox: '0 0 ' + width + ' ' + height, class: 'chart-svg', role: 'img' });
-  const innerW = width - pad.left - pad.right;
-  const innerH = height - pad.top - pad.bottom;
+  const svg = svgEl('svg', { viewBox: '0 0 ' + aspectWidth + ' ' + aspectHeight, class: 'chart-svg', role: 'img' });
+  const innerW = aspectWidth - pad.left - pad.right;
+  const innerH = aspectHeight - pad.top - pad.bottom;
   const count = labels.length;
 
   const totals = labels.map((_, i) =>
@@ -167,7 +168,7 @@ function trendChart(labels, series, { kind = 'line', height = 190, format = fmtC
   for (let step = 0; step <= 4; step += 1) {
     const value = (max / 4) * step;
     svg.append(
-      svgEl('line', { x1: pad.left, x2: width - pad.right, y1: y(value), y2: y(value), class: 'chart-grid' }),
+      svgEl('line', { x1: pad.left, x2: aspectWidth - pad.right, y1: y(value), y2: y(value), class: 'chart-grid' }),
       svgEl('text', { x: pad.left - 6, y: y(value) + 4, class: 'chart-axis', 'text-anchor': 'end' }, format(value))
     );
   }
@@ -360,7 +361,7 @@ function drawOverview() {
     nodes.push(banner);
   }
 
-  const summary = el('div', 'summary');
+  const summary = el('div', 'summary overview-summary');
   summary.append(
     kpiCard('Requests', fmtCompact(t.requests), deltaNote(t.requests, prev.requests)),
     kpiCard('Success rate', fmtPct(t.success_rate), t.requests ? NUMBER_FORMAT.format(t.ok) + ' of ' + NUMBER_FORMAT.format(t.requests) + ' clean' : 'no traffic'),
@@ -1159,7 +1160,7 @@ async function showUserDetail(accountId) {
     const [data] = await Promise.all([apiFetch('/operator/v1/accounts/' + encodeURIComponent(accountId) + '/stats?days=30'), loadAccountNames()]);
     const t = data.totals;
     const errors = t.errors_4xx + t.errors_5xx;
-    const summary = el('div', 'summary');
+    const summary = el('div', 'summary overview-summary');
     summary.append(
       kpiCard('Requests (30d)', fmtCompact(t.requests), data.display_name || shortId(data.account_id)),
       kpiCard('Tokens (30d)', fmtCompact(t.prompt_tokens + t.completion_tokens), plural(data.models.length, 'model')),

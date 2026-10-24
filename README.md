@@ -97,6 +97,16 @@ flowchart LR
 - **Audit trail and exports**: operator actions are recorded without key material; usage, requests and audit export as CSV.
 - **Observability**: one structured JSON log line per request, and a Prometheus `/operator/v1/metrics` endpoint.
 
+### Supported providers
+
+| `provider_name` | Provider | Key type | Notes |
+| :--- | :--- | :--- | :--- |
+| `openai` | OpenAI | `sk-...` | Requests routed as `openai/<model>`. |
+| `anthropic` | Anthropic | `sk-ant-...` | Requests routed as `anthropic/<model>`. |
+| `google` | Google Gemini | Gemini API key | Requests routed as `gemini/<model>`. |
+| `openrouter` | OpenRouter | `sk-or-...` | Requests routed as `openrouter/<model>`; the dashboard can show the provider's view of remaining free requests. |
+
+
 ## Two ways in
 
 | If you want to… | Start here |
@@ -437,6 +447,10 @@ Generate the master key with: `python -c "from cryptography.fernet import Fernet
 - The gateway has no TLS of its own. Terminate TLS in front of it, and set `FORWARDED_ALLOW_IPS` to the proxy's address so `X-Forwarded-*` is trusted from it alone.
 
 Report vulnerabilities privately to the maintainers rather than in a public issue.
+
+## License
+
+MIT licensed — see [LICENSE](LICENSE) for the full text.
 
 ## Need help?
 

@@ -3,6 +3,9 @@
 Read-only: routable keys from the registry plus one pipelined read of the
 used counters. Key state is changed by the failover loop, counters by
 settlement.
+
+Also reads observed rate-limit headers from Redis to skip keys that are
+quota-exhausted until their reset time.
 """
 from __future__ import annotations
 
@@ -10,6 +13,7 @@ import math
 from dataclasses import dataclass
 from datetime import UTC, datetime
 
+from app.pool.limits import get_observed_many, quota_blocked_until
 from app.pool.models import KeyRecord, Provider, window_bounds
 from app.pool.registry import PoolRegistry
 
@@ -82,6 +86,13 @@ async def _remaining_by_id(
     return remaining
 
 
+async def _quota_blocked_by_id(registry: PoolRegistry, records: list[KeyRecord]) -> dict[str, bool]:
+    """Whether each key's observed rate limit still holds (see ``quota_blocked_until``)."""
+    observed = await get_observed_many(registry.redis, [record.id for record in records])
+    now = datetime.now(UTC)
+    return {key_id: quota_blocked_until(obs, now) is not None for key_id, obs in observed.items()}
+
+
 async def select_candidates(
     registry: PoolRegistry,
     model: str,
@@ -94,15 +105,22 @@ async def select_candidates(
     used up, ordered: the preferred provider's capped keys, then other capped
     keys (both by remaining desc, then key_id), then uncapped keys (preferred
     provider first, then key_id).
+
+    Also excludes keys whose last observed rate limit is spent and has not reset yet.
     """
     routable = await registry.routable_keys(model=model)
     universe = [record for record in routable if record.id not in excluded]
 
     remaining_by_id = await _remaining_by_id(registry, universe)
+    quota_blocked = await _quota_blocked_by_id(registry, universe)
 
     capped: list[Candidate] = []
     uncapped: list[Candidate] = []
     for record in universe:
+        # Skip keys whose observed rate limit has not reset yet
+        if quota_blocked.get(record.id, False):
+            continue
+
         remaining = remaining_by_id[record.id]
         if remaining == 0:
             continue

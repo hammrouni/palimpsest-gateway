@@ -144,8 +144,8 @@ async def test_streaming_pre_first_byte_failure_is_clean_503_not_sse(client, red
         },
     )
 
-    # Clean JSON 503, not a 200 text/event-stream carrying an error payload.
-    assert resp.status_code == 503
+    # Clean JSON 429, not a 200 text/event-stream carrying an error payload.
+    assert resp.status_code == 429
     assert "application/json" in resp.headers.get("content-type", "")
     assert "text/event-stream" not in resp.headers.get("content-type", "")
 

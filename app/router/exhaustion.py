@@ -64,7 +64,11 @@ def _reset_headers(next_reset: datetime | None, retry_count: int) -> dict[str, s
 
 
 def render_exhausted(error: PoolExhaustedError, model: str) -> GatewayError:
-    """Render a ``PoolExhaustedError`` as a 503 with retry headers."""
+    """Render a ``PoolExhaustedError`` with retry headers.
+
+    ``pool_exhausted`` (no key has capacity right now) is a 429, so clients
+    that back off on 429 wait for the reset. A spent retry budget is a 503.
+    """
     if error.code == "pool_exhausted":
         wait = _wait_seconds(error.next_reset)
         if wait is not None and wait <= _SHORT_WAIT_SECONDS:
@@ -82,14 +86,16 @@ def render_exhausted(error: PoolExhaustedError, model: str) -> GatewayError:
                 f"No active capacity available for model {model!r}. "
                 "Retry after the next key reset."
             )
+        status_code = 429
     else:
         message = (
             f"Retry budget exhausted while seeking capacity for model {model!r}."
         )
+        status_code = 503
 
     return GatewayError(
         message=message,
-        status_code=503,
+        status_code=status_code,
         error_type="pool_exhausted",
         code=error.code,
         headers=_reset_headers(error.next_reset, error.retry_count),
