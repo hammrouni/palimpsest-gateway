@@ -20,20 +20,13 @@ from app.provider.adapter import attempt as adapter_attempt
 from app.router.classify import Classification, classify
 from app.router.exhaustion import PoolExhaustedError
 from app.router.rebuild import RebuildHook, identity_rebuild
-from app.router.retry_hint import retry_after_seconds
+from app.router.retry_hint import get_quota_reset_seconds, retry_after_seconds
 from app.router.selection import select
 
 logger = logging.getLogger("palimpsest.failover")
 
 SYSTEM_OPERATOR_ID = "gateway:auth_rejected"
 """``last_modified_by`` on a key the gateway suspended after a 401/403."""
-
-
-async def _chain(first: object, rest: object):
-    """The primed first chunk, then the rest of the provider's stream."""
-    yield first
-    async for chunk in rest:
-        yield chunk
 
 
 async def _empty():
@@ -52,17 +45,23 @@ async def _close_quietly(iterator: object) -> None:
 
 
 async def _prime_stream(result: AttemptResult, provider: Provider) -> AttemptResult:
-    """Read a stream's first chunk before anything is sent to the client.
+    """Read a stream up to its first content before anything is sent to the client.
 
     Providers often accept a stream and then fail on the first read (rate
     limit, overload). Caught here it is an ordinary failed attempt that can
     fail over; later it would break a reply that nothing can retry.
+
+    Priming stops at the first chunk that carries text or tool calls. A
+    role-only chunk does not count, so a failure after it still fails over.
     """
     iterator = result.response.__aiter__()
+    primed_chunks: list = []
     try:
-        first = await iterator.__anext__()
-    except StopAsyncIteration:
-        return AttemptResult(ok=True, response=_empty(), headers=result.headers)
+        async for chunk in iterator:
+            primed_chunks.append(chunk)
+            delta = getattr(chunk.choices[0], "delta", None) if chunk.choices else None
+            if getattr(delta, "content", None) or getattr(delta, "tool_calls", None):
+                break
     except Exception as exc:
         await _close_quietly(iterator)
         status = getattr(exc, "status_code", None)
@@ -73,7 +72,18 @@ async def _prime_stream(result: AttemptResult, provider: Provider) -> AttemptRes
             provider,
         )
         return AttemptResult(ok=False, error=error, headers=result.headers)
-    return AttemptResult(ok=True, response=_chain(first, iterator), headers=result.headers)
+
+    return AttemptResult(
+        ok=True, response=_chain(primed_chunks, iterator), headers=result.headers
+    )
+
+
+async def _chain(first_chunks: list, rest: object):
+    """The primed chunks, then the rest of the provider's stream."""
+    for chunk in first_chunks:
+        yield chunk
+    async for chunk in rest:
+        yield chunk
 
 
 @dataclass(frozen=True)
@@ -156,6 +166,8 @@ async def execute_with_failover(
     or any failure once ``first_byte_committed``); the caller renders
     ``result.error`` when ``not result.ok``. Raises ``PoolExhaustedError``,
     with ``.trace`` attached, when no key is left or the budget is spent.
+
+    The whole loop stops once ``2 * provider_timeout`` seconds have passed.
     """
     hook = rebuild_hook or identity_rebuild
     settings = get_settings()
@@ -166,8 +178,16 @@ async def execute_with_failover(
     retry_count = 0
     preferred_provider: Provider | None = None
     start_time = time.monotonic()
+    # Bounds the whole loop, so one request cannot hold the session lock for minutes.
+    total_deadline = start_time + settings.provider_timeout * 2
 
     while True:
+        if time.monotonic() >= total_deadline:
+            raise await _exhausted(
+                registry, model, "budget_exhausted", attempts, retry_count,
+                start_time, None,
+            )
+
         candidate = None
         if len(excluded) <= max_excluded:
             candidate = await select(
@@ -237,10 +257,24 @@ async def execute_with_failover(
                     seconds=retry_after_seconds(result.error.message, result.headers),
                 )
             elif classification.state == "exhausted":
-                await registry.mark_exhausted(candidate.key_id)
+                # A spent quota is per key, so the whole key pauses. The pause
+                # ends at the provider's reset time when it gives one, otherwise
+                # at the key's own reset boundary.
+                reset_seconds = get_quota_reset_seconds(result.headers)
+                if reset_seconds is None:
+                    reset_seconds = retry_after_seconds(result.error.message, result.headers)
+                await registry.mark_exhausted(candidate.key_id, seconds=reset_seconds)
             elif classification.state == "rejected":
                 # The credential itself was refused: suspend it for the operator.
                 await registry.suspend(candidate.key_id, operator_id=SYSTEM_OPERATOR_ID)
+            elif classification.state == "model_scoped":
+                # The key works but not for this model (404, or a model-scoped 403):
+                # skip this model on this key for 24 hours. The key stays active.
+                await registry.mark_cooldown(
+                    candidate.key_id,
+                    model=model,
+                    seconds=86400,  # 24 hours
+                )
         except KeyNotFoundError:
             pass
 

@@ -22,20 +22,31 @@ _IMAGE_MARKER_RE = re.compile(
 )
 
 _CONTEXT_MARKER_RE = re.compile(
-    r"(?i)(context[\s_-]?(length|window)|maximum context|too many tokens|prompt is too long)"
+    r"(?i)(context[\s_-]?(length|window)|maximum context|too many tokens|prompt is too long|input length \d+ exceeds the maximum allowed input length|"
+    r"input length \d+ exceeds \d+|maxi[mn]um.*context.*exceeded|context.*exceeded.*tokens?|too many tokens)"
+)
+
+_MODEL_SCOPED_403_RE = re.compile(
+    r"(?i)(only available on|model.*not.*supported|not available for this model|model.*not.*found|"
+    r"access.*denied.*model|model.*quota|per.*day.*limit|not allowed for this model|"
+    r"model.*not.*available|capability.*not.*enabled|not supported by this key)"
 )
 
 _CONTEXT_EXCEEDED_MESSAGE = (
     "The conversation is too long for the selected model's context window; "
     "start a new session or choose a model with a larger context."
 )
-_UPSTREAM_REJECTED_MESSAGE ="No upstream credential accepted the request."
+_UPSTREAM_REJECTED_MESSAGE = "No upstream credential accepted the request."
 _INVALID_REQUEST_MESSAGE = (
     "Request was rejected by the upstream; no provider details are disclosed."
 )
 _IMAGE_NOT_SUPPORTED_MESSAGE = (
     "The selected model does not support image input; remove image attachments "
     "or choose a vision-capable model."
+)
+_MODEL_SCOPED_403_MESSAGE = (
+    "The selected model is not available with the current provider key; "
+    "choose a different model or contact the operator."
 )
 
 
@@ -47,7 +58,7 @@ class Classification:
     the loop rotate, and exhaustion has its own messages.
     """
 
-    state: str  # "transient" | "exhausted" | "rejected" | "fatal"
+    state: str  # "transient" | "exhausted" | "rejected" | "fatal" | "model_scoped"
     client_status: int
     client_code: str
     client_message: str
@@ -58,18 +69,26 @@ def classify(error: ProviderAttemptError) -> Classification:
 
     401/403 mean the pool key itself was refused, not the client's request:
     ``rejected`` takes the key out of rotation and tries the next one.
+    But model-scoped 403s (e.g., "only available on agentic harnesses") are
+    not auth failures and should be a per-model cooldown, not a key suspension.
     """
     status = error.status_code
     message = error.message or ""
+    code = error.code or ""
 
     if status == 429:
         return Classification("transient", 503, "provider_unavailable", PROVIDER_UNAVAILABLE)
     if status == 402:
         return Classification("exhausted", 429, "rate_limit_exceeded", RATE_LIMIT)
-    if status == 400 and _QUOTA_MARKER_RE.search(message):
+    if (status == 400 or status == 403) and _QUOTA_MARKER_RE.search(message):
         return Classification("exhausted", 429, "rate_limit_exceeded", RATE_LIMIT)
     if status == 400 and _CONTEXT_MARKER_RE.search(message):
         # Prompt size vs. the model's window: actionable, leaks no credentials.
+        return Classification(
+            "fatal", 400, "context_length_exceeded", _CONTEXT_EXCEEDED_MESSAGE
+        )
+    if code == "context_length_exceeded":
+        # adapter.py maps ContextWindowExceededError to this code
         return Classification(
             "fatal", 400, "context_length_exceeded", _CONTEXT_EXCEEDED_MESSAGE
         )
@@ -82,7 +101,14 @@ def classify(error: ProviderAttemptError) -> Classification:
     # 408 (a timeout) is retried like a 5xx: the next key may be quicker.
     if status is None or status == 408 or 500 <= status <= 599:
         return Classification("transient", 503, "provider_unavailable", PROVIDER_UNAVAILABLE)
+    if status == 404:
+        # Model not found: exclude this model on this key for a long TTL
+        return Classification("model_scoped", 502, "model_not_found", _MODEL_SCOPED_403_MESSAGE)
     if status in (401, 403):
+        # Check if this is a model-scoped 403 (not a real auth failure)
+        if _MODEL_SCOPED_403_RE.search(message):
+            return Classification("model_scoped", 502, "model_not_allowed", _MODEL_SCOPED_403_MESSAGE)
+        # Real auth failure: suspend the entire key
         return Classification("rejected", 502, "upstream_rejected", _UPSTREAM_REJECTED_MESSAGE)
     if status == 400:
         return Classification("fatal", 400, "invalid_request", _INVALID_REQUEST_MESSAGE)

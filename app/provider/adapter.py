@@ -9,6 +9,7 @@ import logging
 from dataclasses import dataclass
 from typing import Any
 
+import httpx
 import litellm
 from litellm import acompletion
 from litellm.exceptions import (
@@ -28,6 +29,7 @@ from app.pool.registry import KeyNotFoundError, PoolRegistry
 
 litellm.verbose = False
 litellm.logging = False
+litellm.suppress_debug_info = True
 
 logger = logging.getLogger("palimpsest.provider")
 
@@ -165,14 +167,29 @@ async def _attempt_once(
     if unknown:
         logger.debug("dropping unrecognized litellm params: %s", unknown)
 
+    # Gemini 3+ warns that temperature, top_p and top_k are being removed. Drop them
+    # for every gemini- model here, not only 3+, so the request stays uniform.
+    if provider == Provider.GOOGLE and model.startswith("gemini-"):
+        for param in ("temperature", "top_p", "top_k"):
+            if param in filtered_params:
+                logger.debug("dropping deprecated gemini param: %s", param)
+                filtered_params.pop(param)
+
     try:
+        settings = get_settings()
+        # litellm takes a float or an httpx.Timeout, never a tuple (a tuple
+        # raises TypeError before any request is sent).
+        timeout = httpx.Timeout(
+            settings.provider_read_timeout,
+            connect=settings.provider_connect_timeout,
+        )
         response = await acompletion(
             model=mapped_model,
             api_key=material,
             api_base=api_base,
             messages=messages,
             # litellm's own default is 6000s, holding the session lock throughout.
-            timeout=get_settings().provider_timeout,
+            timeout=timeout,
             **filtered_params,
         )
         hidden = getattr(response, "_hidden_params", None) or {}

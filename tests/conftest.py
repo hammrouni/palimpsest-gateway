@@ -146,6 +146,17 @@ def _pool_master_key():
         os.environ["PALIMPSEST_GATE_MASTER_KEY"] = Fernet.generate_key().decode()
 
 
+@pytest.fixture(autouse=True)
+def chat_settings_override():
+    """Disable auto_create_sessions so foreign session IDs return 404."""
+    from app.config import get_settings
+    settings = get_settings()
+    original = settings.auto_create_sessions
+    settings.auto_create_sessions = False
+    yield
+    settings.auto_create_sessions = original
+
+
 @pytest.fixture
 def app():
     """Create test FastAPI app."""

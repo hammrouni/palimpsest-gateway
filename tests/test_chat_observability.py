@@ -173,8 +173,8 @@ async def test_busy_423_logs_busy_423(client, redis, chat_provider_mock, fast_lo
 
 
 @pytest.mark.asyncio
-async def test_pool_exhausted_logs_exhausted_503(client, redis, caplog):
-    """No routable pool key -> PoolExhaustedError -> 503, still one record."""
+async def test_pool_exhausted_logs_exhausted_429(client, redis, caplog):
+    """No routable pool key -> PoolExhaustedError -> 429, still one record."""
     create_resp = await client.post("/v1/accounts", json={})
     api_key = create_resp.json()["keys"][0]["key"]
 
@@ -184,11 +184,11 @@ async def test_pool_exhausted_logs_exhausted_503(client, redis, caplog):
             headers={"Authorization": f"Bearer {api_key}"},
             json={"model": "gpt-4o-mini", "messages": [{"role": "user", "content": "hi"}]},
         )
-    assert resp.status_code == 503
+    assert resp.status_code == 429
 
     record = _last_record(caplog)
-    assert record["outcome"] == "exhausted_503"
-    assert record["status_code"] == 503
+    assert record["outcome"] == "exhausted_429"
+    assert record["status_code"] == 429
 
 
 @pytest.mark.asyncio
@@ -583,10 +583,10 @@ _BODY = {"model": "gpt-4o-mini", "messages": [{"role": "user", "content": "hi"}]
 
 
 @pytest.mark.asyncio
-async def test_exhausted_503_header_equals_logged_request_id_and_echoes_supplied(
+async def test_exhausted_429_header_equals_logged_request_id_and_echoes_supplied(
     client, redis, caplog
 ):
-    """503 (no routable key): the header is the logged request_id, not a fresh ID,
+    """429 (no routable key): the header is the logged request_id, not a fresh ID,
     and a caller-supplied ID is used for both."""
     api_key, _ = await _new_account(client)
     with caplog.at_level(logging.INFO, logger="palimpsest.requests"):
@@ -595,14 +595,14 @@ async def test_exhausted_503_header_equals_logged_request_id_and_echoes_supplied
         )
         supplied = await client.post(
             "/v1/chat/completions",
-            headers={"Authorization": f"Bearer {api_key}", "X-Request-ID": "rid-503"},
+            headers={"Authorization": f"Bearer {api_key}", "X-Request-ID": "rid-429"},
             json=_BODY,
         )
-    assert plain.status_code == supplied.status_code == 503
+    assert plain.status_code == supplied.status_code == 429
     recs = _records(caplog)
     assert len(recs) == 2  # exactly one record per request
     assert plain.headers["x-request-id"] == recs[0]["request_id"]
-    assert supplied.headers["x-request-id"] == "rid-503" == recs[1]["request_id"]
+    assert supplied.headers["x-request-id"] == "rid-429" == recs[1]["request_id"]
 
 
 @pytest.mark.asyncio

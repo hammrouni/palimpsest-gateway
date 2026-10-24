@@ -15,7 +15,7 @@ from __future__ import annotations
 import json
 import logging
 from collections.abc import Mapping
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from typing import Any
 
 import httpx
@@ -89,6 +89,95 @@ async def get_observed(redis: Any, key_id: str) -> dict[str, Any] | None:
         return json.loads(raw.decode() if isinstance(raw, bytes) else raw)
     except ValueError:
         return None
+
+
+async def get_observed_many(redis: Any, key_ids: list[str]) -> dict[str, dict[str, Any] | None]:
+    """``get_observed`` for several keys in one round trip."""
+    if not key_ids:
+        return {}
+    pipe = redis.pipeline(transaction=False)
+    for key_id in key_ids:
+        pipe.get(_KEY.format(key_id=key_id))
+    raw_values = await pipe.execute()
+    observed: dict[str, dict[str, Any] | None] = {}
+    for key_id, raw in zip(key_ids, raw_values, strict=True):
+        if raw is None:
+            observed[key_id] = None
+            continue
+        try:
+            observed[key_id] = json.loads(raw.decode() if isinstance(raw, bytes) else raw)
+        except ValueError:
+            observed[key_id] = None
+    return observed
+
+
+# Reset values above these are epoch milliseconds, then epoch seconds. Anything
+# smaller is a count of seconds from when the headers were observed.
+_EPOCH_MS_FLOOR = 10**11
+_EPOCH_S_FLOOR = 10**9
+_ABSOLUTE_RESET_HEADERS = ("ratelimit-reset", "x-ratelimit-reset")
+_RELATIVE_RESET_HEADERS = ("ratelimit-reset-after", "x-ratelimit-reset-after", "retry-after")
+
+
+def _number(value: str) -> float | None:
+    try:
+        return float(value)
+    except ValueError:
+        return None
+
+
+def _reset_instant(name: str, value: str, observed_at: datetime) -> datetime | None:
+    """One reset header as a UTC instant, or None if it is not a usable number."""
+    number = _number(value)
+    if number is None:
+        return None
+    try:
+        if name in _ABSOLUTE_RESET_HEADERS:
+            if number > _EPOCH_MS_FLOOR:
+                return datetime.fromtimestamp(number / 1000, UTC)
+            if number > _EPOCH_S_FLOOR:
+                return datetime.fromtimestamp(number, UTC)
+            return observed_at + timedelta(seconds=number)
+        if name in _RELATIVE_RESET_HEADERS:
+            return observed_at + timedelta(seconds=number)
+    except (OverflowError, OSError, ValueError):
+        return None
+    return None
+
+
+def quota_blocked_until(
+    observed: dict[str, Any] | None, now: datetime | None = None
+) -> datetime | None:
+    """When a key's last observed rate limit lifts, while that limit still holds.
+
+    The limit holds when the provider reported zero requests remaining and a
+    reset time is still ahead. Without a usable reset time it does not hold:
+    the next attempt on the key says more, so the key stays routable.
+    """
+    if not isinstance(observed, dict):
+        return None
+    headers = observed.get("headers")
+    if not isinstance(headers, dict):
+        return None
+    if not any(
+        "remaining" in name.lower() and _number(str(value)) is not None and _number(str(value)) <= 0
+        for name, value in headers.items()
+    ):
+        return None
+    try:
+        observed_at = datetime.fromisoformat(observed["updated_at"])
+    except (KeyError, TypeError, ValueError):
+        return None
+
+    resets = [
+        instant
+        for name, value in headers.items()
+        if (instant := _reset_instant(name.lower(), str(value), observed_at)) is not None
+    ]
+    if not resets:
+        return None
+    latest = max(resets)
+    return latest if latest > (now or datetime.now(UTC)) else None
 
 
 async def clear_observed(redis: Any, key_id: str) -> None:

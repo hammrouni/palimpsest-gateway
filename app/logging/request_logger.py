@@ -36,7 +36,7 @@ def log_request(
         latency_ms: Request latency in milliseconds
         stream: Whether the response was streamed
         outcome: Outcome token (success, rejected_404, busy_423,
-            exhausted_503, error_5xx, stream_interrupted, ...)
+            exhausted_429, exhausted_503, error_5xx, stream_interrupted, ...)
         messages: Current turn's messages, logged only with
             ``request_log_prompts`` on
         chain: Pool key ids attempted, in order (ids only)

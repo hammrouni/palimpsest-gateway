@@ -3259,15 +3259,39 @@ function renderRequests(view) {
         });
         return labelled(label, input);
       };
+      const dateRange = el('div', 'field date-range');
+      dateRange.append(
+        el('span', null, 'Date range'),
+        (() => {
+          const wrap = el('div', 'date-range-inputs');
+          const fromInput = el('input');
+          fromInput.type = 'datetime-local';
+          fromInput.value = requests.from;
+          fromInput.addEventListener('change', () => {
+            requests.from = fromInput.value;
+            refilter();
+          });
+          const toInput = el('input');
+          toInput.type = 'datetime-local';
+          toInput.value = requests.to;
+          toInput.addEventListener('change', () => {
+            requests.to = toInput.value;
+            refilter();
+          });
+          wrap.append(labelled('From', fromInput), labelled('To', toInput));
+          return wrap;
+        })()
+      );
       requests.picker.replaceChildren(
         labelled('User', select),
         labelled('Show', limit),
         labelled('Group by', groupBy),
         labelled('Search', search),
-        labelled('Outcome', outcome),
-        windowInput('from', 'From'),
-        windowInput('to', 'To')
+        labelled('Outcome', outcome)
       );
+      const dateRangeRow = el('div', 'filters date-range-row');
+      dateRangeRow.append(dateRange);
+      requests.picker.parentElement.insertBefore(dateRangeRow, requests.picker.nextSibling);
       return loadRequests();
     }
   );

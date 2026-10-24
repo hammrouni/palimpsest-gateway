@@ -399,9 +399,9 @@ class PoolRegistry:
         except ValueError as exc:
             raise KeyNotFoundError(key_id) from exc
 
-    async def mark_exhausted(self, key_id: str) -> None:
-        """Exclude the key until its next reset boundary."""
-        await self._mark(key_id, KeyState.EXHAUSTED)
+    async def mark_exhausted(self, key_id: str, seconds: float | None = None) -> None:
+        """Exclude the whole key for ``seconds``, or until its next reset boundary if not given."""
+        await self._mark(key_id, KeyState.EXHAUSTED, ttl_seconds=seconds)
 
     async def mark_cooldown(
         self, key_id: str, model: str | None = None, seconds: float | None = None

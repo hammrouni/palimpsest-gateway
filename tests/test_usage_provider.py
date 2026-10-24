@@ -57,7 +57,7 @@ async def test_a_served_request_is_recorded_under_the_provider_that_served_it(
 async def test_a_request_nobody_served_has_no_provider(
     client, redis, chat_provider_mock, operator_headers
 ):
-    assert (await _chat(client, model="unserved")).status_code == 503
+    assert (await _chat(client, model="unserved")).status_code == 429
 
     (record,) = (await client.get("/operator/v1/requests", headers=operator_headers)).json()["data"]
     assert record["provider"] is None

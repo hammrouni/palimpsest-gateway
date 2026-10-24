@@ -52,8 +52,8 @@ ensure_secret master_key PALIMPSEST_GATE_MASTER_KEY generate_master_key
 ensure_secret operator_key PALIMPSEST_GATE_OPERATOR_KEY generate_operator_key
 
 if [ -z "${PALIMPSEST_PROVIDER_API_KEY:-}" ]; then
-    log "no provider API key set — add PALIMPSEST_PROVIDER_API_KEY to serve /v1/chat/completions"
-    log "the API and dashboard work without it; chat requests will be rejected"
+    log "no provider API key set — add PALIMPSEST_PROVIDER_API_KEY to serve /v1/chat/completions via single-key mode"
+    log "the API and dashboard work without it; chat works via the provider key pool if configured"
 fi
 
 # The operator key is printed so a local run can sign in straight from the log.

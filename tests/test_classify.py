@@ -113,12 +113,36 @@ def test_auth_rejection_takes_the_key_out_of_rotation(status):
     assert result.client_code == "upstream_rejected"
 
 
-@pytest.mark.parametrize("status", [404, 422, 409, 413])
+@pytest.mark.parametrize("status", [404])
+def test_404_is_model_scoped(status):
+    """404 (model not found) should be model-scoped, not suspend the key."""
+    result = classify(_error(status, "model not found"))
+    assert result.state == "model_scoped"
+    assert result.client_status == 502
+    assert result.client_code in ("model_not_found", "model_not_allowed")
+
+
+@pytest.mark.parametrize("status", [422, 409, 413])
 def test_other_4xx_is_fatal_upstream_rejected(status):
     result = classify(_error(status, "not found"))
     assert result.state == "fatal"
     assert result.client_status == 502
     assert result.client_code == "upstream_rejected"
+
+
+@pytest.mark.parametrize("message", [
+    "only available on agentic harnesses",
+    "model not supported for this key",
+    "not available for this model",
+    "access denied for this model",
+    "per day limit exceeded for model",
+])
+def test_403_model_scoped_is_cooldown_not_suspended(message):
+    """403 with model-scoped message should be model_scoped, not rejected."""
+    result = classify(_error(403, message))
+    assert result.state == "model_scoped"
+    assert result.client_status == 502
+    assert result.client_code == "model_not_allowed"
 
 
 # -- purity + no I/O -------------------------------------------------------------

@@ -32,9 +32,14 @@ def test_timeouts_and_server_errors_are_transient(status):
     assert classify(_error(status)).state == "transient"
 
 
-@pytest.mark.parametrize("status", [400, 404, 422])
+@pytest.mark.parametrize("status", [400, 422])
 def test_client_errors_stay_fatal_or_invalid(status):
     assert classify(_error(status)).state == "fatal"
+
+
+def test_404_is_model_scoped_not_fatal():
+    """404 (model not found) should be model-scoped, not fatal, so the model is excluded on that key."""
+    assert classify(_error(404)).state == "model_scoped"
 
 
 @pytest.mark.asyncio
