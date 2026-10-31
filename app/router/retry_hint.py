@@ -23,6 +23,9 @@ _DURATION = r"(?:\d+(?:\.\d+)?[dhms])+"
 _RETRY_IN = re.compile(rf"retry in\s+({_DURATION})", re.IGNORECASE)
 _RETRY_DELAY = re.compile(rf'"retryDelay"\s*:\s*"({_DURATION})"')
 _PART = re.compile(r"(\d+(?:\.\d+)?)([dhms])")
+# OpenRouter repeats its rate-limit headers inside the error body, and litellm
+# does not always surface them as response headers.
+_BODY_RESET = re.compile(r'"X-RateLimit-Reset"\s*:\s*"?(\d{10,13})"?', re.IGNORECASE)
 
 
 def _seconds(duration: str) -> float:
@@ -61,12 +64,25 @@ def _parse_reset_header(headers: Mapping[str, Any] | None) -> float | None:
     return None
 
 
+def _parse_body_reset(message: str | None) -> float | None:
+    """Seconds until the ``X-RateLimit-Reset`` epoch quoted in an error body, if still ahead."""
+    match = _BODY_RESET.search(message or "")
+    if not match:
+        return None
+    reset = int(match.group(1))
+    reset_epoch = reset / 1000.0 if reset > 10_000_000_000 else float(reset)
+    wait_seconds = reset_epoch - time.time()
+    return wait_seconds if wait_seconds > 0 else None
+
+
 def retry_after_seconds(message: str | None, headers: Mapping[str, Any] | None = None) -> int | None:
     """Whole seconds the provider asked us to wait (1 to a day), or None if it did not say."""
     found: float | None = None
 
-    # First, try OpenRouter's reset header (epoch-ms)
+    # First, try OpenRouter's reset header (epoch-ms), then the same value in the body
     reset_wait = _parse_reset_header(headers)
+    if reset_wait is None:
+        reset_wait = _parse_body_reset(message)
     if reset_wait is not None:
         found = reset_wait
     else:

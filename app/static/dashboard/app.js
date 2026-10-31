@@ -43,7 +43,7 @@ const CONFIG_FIELDS = [
 
 const NUMBER_FORMAT = new Intl.NumberFormat();
 
-const PROVIDERS = ['openai', 'anthropic', 'google', 'openrouter'];
+const PROVIDERS = ['openai', 'anthropic', 'google', 'openrouter', 'mistral', 'groq', 'custom'];
 const KEY_STATES = ['active', 'exhausted', 'cooldown', 'suspended'];
 
 const POOL_KEY_COLUMNS = [
@@ -1935,6 +1935,9 @@ const PROVIDER_NAMES = {
   anthropic: 'Anthropic',
   google: 'Google',
   openrouter: 'OpenRouter',
+  mistral: 'Mistral',
+  groq: 'Groq',
+  custom: 'Custom (OpenAI-compatible)',
 };
 
 function keyName(key) {

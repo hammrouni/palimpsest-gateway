@@ -173,3 +173,36 @@ def test_classify_module_has_no_await_or_store_import():
             if node.module and node.module.startswith("app.api"):
                 raise AssertionError("classify.py imports from app.api")
     assert "import app.provider" not in source
+
+
+def test_429_request_too_large_is_fatal_and_does_not_penalise_the_key():
+    result = classify(
+        _error(
+            429,
+            "Request too large for model `openai/gpt-oss-120b` on tokens per minute (TPM): "
+            "Limit 8000, Requested 14658, please reduce your message size",
+        )
+    )
+    assert result.state == "fatal"
+    assert result.client_status == 400
+    assert result.client_code == "context_length_exceeded"
+
+
+@pytest.mark.parametrize(
+    "message",
+    [
+        "You have no credits remaining. Add credits to continue using the API",
+        "insufficient_quota: you exceeded your current quota",
+    ],
+)
+def test_429_with_no_credits_is_exhausted(message):
+    result = classify(_error(429, message))
+    assert result.state == "exhausted"
+    assert result.client_status == 429
+
+
+def test_429_free_tier_daily_limit_stays_transient():
+    result = classify(
+        _error(429, "Rate limit exceeded: free-models-per-day. Add 10 credits to unlock 1000 free model requests per day")
+    )
+    assert result.state == "transient"

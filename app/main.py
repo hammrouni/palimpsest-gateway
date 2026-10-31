@@ -94,7 +94,7 @@ async def seed_provider_key(redis_client) -> None:
     except ValidationError:
         log.error(
             "PALIMPSEST_PROVIDER_API_KEY not added: invalid PALIMPSEST_PROVIDER_NAME "
-            "or PALIMPSEST_PROVIDER_MODEL (providers: openai, anthropic, google, openrouter)"
+            "or PALIMPSEST_PROVIDER_MODEL (providers: openai, anthropic, google, openrouter, mistral, groq, custom)"
         )
         return
     try:

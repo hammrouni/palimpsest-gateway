@@ -111,3 +111,21 @@ def test_waits_are_put_in_words(seconds, expected):
     error = PoolExhaustedError("pool_exhausted", datetime.now(UTC) + timedelta(seconds=seconds - 0.5))
 
     assert render_exhausted(error, "m").message.endswith(expected)
+
+
+def test_openrouter_daily_reset_in_the_error_body_sets_the_wait():
+    import time
+
+    reset_ms = int((time.time() + 3 * 3600) * 1000)
+    body = (
+        '{"error":{"message":"Rate limit exceeded: free-models-per-day","code":429,'
+        f'"metadata":{{"headers":{{"X-RateLimit-Reset":"{reset_ms}"}}}}}}}}'
+    )
+    wait = retry_after_seconds(body, None)
+    assert wait is not None
+    assert 3 * 3600 - 5 <= wait <= 3 * 3600 + 5
+
+
+def test_a_body_reset_already_in_the_past_is_ignored():
+    body = '{"metadata":{"headers":{"X-RateLimit-Reset":"1000000000000"}}}'
+    assert retry_after_seconds(body, None) is None
