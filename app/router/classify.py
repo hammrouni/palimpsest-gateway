@@ -16,6 +16,16 @@ if TYPE_CHECKING:
 
 _QUOTA_MARKER_RE = re.compile(r"(?i)(quota|rate\s?limit|insufficient|credit|billing|balance)")
 
+# A 429 that no wait fixes: the account is out of money, not briefly throttled.
+_HARD_QUOTA_RE = re.compile(
+    r"(?i)(no credits remaining|insufficient[_\s]?(credits?|quota|funds)|"
+    r"exceeded your current quota|out of credits|credit balance is too low)"
+)
+
+# Groq/OpenAI-style "Request too large ... Limit 8000, Requested 14658": this one
+# request can never fit, so every key would refuse it and none is unhealthy.
+_REQUEST_TOO_LARGE_RE = re.compile(r"(?i)request too large")
+
 _IMAGE_MARKER_RE = re.compile(
     r"(?i)(image|vision|visual|photo|picture|\.png|\.jpg|\.jpeg|\.gif|\.webp"
     r"|base64|multimodal|image_url|cannot read|does not support image)"
@@ -39,6 +49,10 @@ _CONTEXT_EXCEEDED_MESSAGE = (
 _UPSTREAM_REJECTED_MESSAGE = "No upstream credential accepted the request."
 _INVALID_REQUEST_MESSAGE = (
     "Request was rejected by the upstream; no provider details are disclosed."
+)
+_REQUEST_TOO_LARGE_MESSAGE = (
+    "The request is larger than the selected model's per-request token limit; "
+    "shorten the conversation or choose a model with a higher limit."
 )
 _IMAGE_NOT_SUPPORTED_MESSAGE = (
     "The selected model does not support image input; remove image attachments "
@@ -76,6 +90,12 @@ def classify(error: ProviderAttemptError) -> Classification:
     message = error.message or ""
     code = error.code or ""
 
+    if status == 429 and _REQUEST_TOO_LARGE_RE.search(message):
+        return Classification(
+            "fatal", 400, "context_length_exceeded", _REQUEST_TOO_LARGE_MESSAGE
+        )
+    if status == 429 and _HARD_QUOTA_RE.search(message):
+        return Classification("exhausted", 429, "rate_limit_exceeded", RATE_LIMIT)
     if status == 429:
         return Classification("transient", 503, "provider_unavailable", PROVIDER_UNAVAILABLE)
     if status == 402:

@@ -17,6 +17,8 @@ from app.pool.models import Provider
 _OPENAI_DEFAULT_BASE = "https://api.openai.com/v1"
 _ANTHROPIC_URL = "https://api.anthropic.com/v1/models?limit=1000"
 _GOOGLE_URL = "https://generativelanguage.googleapis.com/v1beta/models?pageSize=1000"
+_MISTRAL_URL = "https://api.mistral.ai/v1/models"
+_GROQ_URL = "https://api.groq.com/openai/v1/models"
 _TIMEOUT = 15.0
 _MAX_MODELS = 2000
 _MAX_ID = 160
@@ -39,6 +41,15 @@ def _request(provider: Provider, api_key: str) -> tuple[str, dict[str, str]]:
         return _ANTHROPIC_URL, {"x-api-key": api_key, "anthropic-version": "2023-06-01"}
     if provider == Provider.GOOGLE:
         return _GOOGLE_URL, {"x-goog-api-key": api_key}
+    if provider == Provider.MISTRAL:
+        return _MISTRAL_URL, {"Authorization": f"Bearer {api_key}"}
+    if provider == Provider.GROQ:
+        return _GROQ_URL, {"Authorization": f"Bearer {api_key}"}
+    if provider == Provider.CUSTOM:
+        base = settings.custom_base_url
+        if not base:
+            raise CatalogError("Custom provider requires PALIMPSEST_CUSTOM_BASE_URL to be set.")
+        return base.rstrip("/") + "/models", {"Authorization": f"Bearer {api_key}"}
     raise CatalogError("Listing models is not supported for this provider.")
 
 

@@ -39,6 +39,9 @@ _MODEL_PREFIX: dict[Provider, str] = {
     # litellm has no "google/" route; Gemini API keys are served under "gemini/".
     Provider.GOOGLE: "gemini",
     Provider.OPENROUTER: "openrouter",
+    Provider.MISTRAL: "mistral",
+    Provider.GROQ: "groq",
+    Provider.CUSTOM: "openai",  # custom OpenAI-compatible endpoints use openai prefix
 }
 
 _LITELLM_PARAM_WHITELIST = frozenset({
@@ -96,6 +99,12 @@ def _api_base(provider: Provider) -> str | None:
         return settings.openrouter_base_url
     if provider == Provider.OPENAI:
         return settings.openai_base_url or None
+    if provider == Provider.MISTRAL:
+        return settings.mistral_base_url or None
+    if provider == Provider.GROQ:
+        return settings.groq_base_url or None
+    if provider == Provider.CUSTOM:
+        return settings.custom_base_url or None
     return None
 
 

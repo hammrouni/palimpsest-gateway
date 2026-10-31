@@ -111,6 +111,9 @@ class Settings(BaseSettings):
     # Provider base URLs.
     openrouter_base_url: str = "https://openrouter.ai/api/v1"
     openai_base_url: str | None = None
+    mistral_base_url: str | None = None
+    groq_base_url: str | None = None
+    custom_base_url: str | None = None
 
     @property
     def cors_origin_list(self) -> list[str]:

@@ -31,6 +31,9 @@ class Provider(StrEnum):
     ANTHROPIC = "anthropic"
     GOOGLE = "google"
     OPENROUTER = "openrouter"
+    MISTRAL = "mistral"
+    GROQ = "groq"
+    CUSTOM = "custom"
 
 
 class KeyState(StrEnum):
