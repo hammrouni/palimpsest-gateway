@@ -5,6 +5,7 @@ import asyncio
 import logging
 import os
 import re
+import time
 from contextlib import asynccontextmanager
 from datetime import UTC, datetime
 
@@ -176,7 +177,36 @@ def _envelope(error_type: str, message: str, code: str, param: str | None = None
     return {"error": {"type": error_type, "message": message, "param": param, "code": code}}
 
 
+class _DeadSocketLogFilter(logging.Filter):
+    """Keep asyncio's repeated ``socket.send() raised exception.`` to one line a minute.
+
+    It is logged on every write to a connection the client already closed (a
+    dropped stream), which flooded the log with tens of thousands of copies.
+    """
+
+    def __init__(self, interval: float = 60.0) -> None:
+        super().__init__()
+        self._interval = interval
+        self._last = 0.0
+        self._dropped = 0
+
+    def filter(self, record: logging.LogRecord) -> bool:
+        if "socket.send() raised exception" not in record.getMessage():
+            return True
+        now = time.monotonic()
+        if now - self._last < self._interval:
+            self._dropped += 1
+            return False
+        if self._dropped:
+            record.msg = f"{record.getMessage()} ({self._dropped} similar suppressed)"
+            record.args = ()
+            self._dropped = 0
+        self._last = now
+        return True
+
+
 def create_app() -> FastAPI:
+    logging.getLogger("asyncio").addFilter(_DeadSocketLogFilter())
     """Create and configure the FastAPI application."""
     settings = get_settings()
 
