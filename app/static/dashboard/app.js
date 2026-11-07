@@ -1777,6 +1777,8 @@ const health = {
   keyTable: null,
   eventTable: null,
   modelList: null,
+  options: null,
+  config: null,
   loadMore: null,
 };
 
@@ -2291,7 +2293,36 @@ function drawEvents() {
   }
 }
 
+/* Which routing options are on right now, so an operator sees at a glance why a
+   request did not go to the model it asked for. */
+function drawActiveOptions() {
+  const config = health.config;
+  if (!config) {
+    health.options.replaceChildren();
+    return;
+  }
+  const row = (label, on, detail) => {
+    const line = el('div', 'cell-line');
+    line.append(el('span', 'badge badge--' + (on ? 'active' : 'suspended'), on ? 'ON' : 'OFF'), el('strong', null, label));
+    if (detail) {
+      line.append(el('span', 'note', detail));
+    }
+    return line;
+  };
+  const masters = Object.entries(config.provider_master_models || {});
+  health.options.replaceChildren(
+    row('Master model (all requests)', Boolean(config.master_model),
+      config.master_model ? 'every request is served by ' + config.master_model : 'clients get the model they ask for'),
+    row('Master model per provider', masters.length > 0,
+      masters.length ? masters.map(([provider, model]) => provider + ' → ' + model).join(' · ')
+        + (config.master_model ? ' (overridden by the gateway-wide master)' : '') : 'not set'),
+    row('Share models by provider', config.share_models_by_provider === true,
+      config.share_models_by_provider ? 'every key serves the combined model list of its provider' : 'each key serves its own list')
+  );
+}
+
 function drawHealth() {
+  drawActiveOptions();
   drawSummary();
   drawUtilizationKeys();
   drawUnavailableModels();
@@ -2341,6 +2372,14 @@ async function loadHealth() {
       return;
     }
     failures.push(err.message);
+  }
+  try {
+    health.config = await apiFetch(CONFIG_PATH);
+  } catch (err) {
+    if (err instanceof SignedOut) {
+      return;
+    }
+    health.config = null; /* the options strip is optional; the rest still loads */
   }
   try {
     await loadEventsPage(null);
@@ -2396,6 +2435,7 @@ function renderHealth(view) {
   health.group = savedChoice('group.keys', 'provider', KEY_GROUPS.map((entry) => entry[0]));
   health.eventTable = el('div', 'table-wrap');
   health.modelList = el('div', 'model-list');
+  health.options = el('div', 'option-strip');
 
   const groupBy = pairSelect(KEY_GROUPS, health.group);
   groupBy.addEventListener('change', () => {
@@ -2413,6 +2453,7 @@ function renderHealth(view) {
     actions: [refreshButton(() => loadHealth())],
     tools: [filters],
     content: [
+      health.options,
       health.summary,
       el('h3', null, 'Utilization by key'),
       health.keyTable,
