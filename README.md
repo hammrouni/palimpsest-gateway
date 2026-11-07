@@ -128,7 +128,7 @@ flowchart LR
 
 - Docker, with Compose v2 (`docker compose version` should work)
 
-That is genuinely all — the image carries Python and every dependency, and Compose starts the one backing service it needs. Nothing to compile, no virtualenv, no manual key generation.
+That is genuinely all - the image carries Python and every dependency, and Compose starts the one backing service it needs. Nothing to compile, no virtualenv, no manual key generation.
 
 If you do not want to use Docker, [the User Guide](docs/USER_GUIDE.md#without-compose) covers running it against your own Redis and Python.
 
@@ -164,7 +164,7 @@ docker compose exec app cat /app/.secrets/operator_key
 Set `PALIMPSEST_LOG_OPERATOR_KEY=false` on any deployment whose logs are collected or shared: the key grants the whole operator realm.
 
 > [!SECURITY]
-> **Before you open this in a browser, notice where it's listening.** By default the gateway binds `127.0.0.1:8000` — loopback only — and it has no TLS and no rate limiting. If you run this on a shared machine, in a container exposed to a network, or on a VPS and open `http://localhost:8000`, you get an unauthenticated, un-TLS endpoint with **account signup on by default** (`PALIMPSEST_ALLOW_SIGNUP=true`): anyone can create an account and spend your provider keys.
+> **Before you open this in a browser, notice where it's listening.** By default the gateway binds `127.0.0.1:8000` - loopback only - and it has no TLS and no rate limiting. If you run this on a shared machine, in a container exposed to a network, or on a VPS and open `http://localhost:8000`, you get an unauthenticated, un-TLS endpoint with **account signup on by default** (`PALIMPSEST_ALLOW_SIGNUP=true`): anyone can create an account and spend your provider keys.
 >
 > To keep it on loopback, do not publish port 8000 (no `ports:` entry for the host, or keep it bound to `127.0.0.1`). To expose it at all, do it deliberately: set `PALIMPSEST_BIND=0.0.0.0` and `PALIMPSEST_PORT` in `.env`, put a reverse proxy in front with TLS, and set `PALIMPSEST_ALLOW_SIGNUP=false` with a `PALIMPSEST_USER_DAILY_CAP`.
 
@@ -179,7 +179,7 @@ docker compose up -d
 
 On startup the gateway adds that key to the pool for provider `PALIMPSEST_PROVIDER_NAME` (default `openai`), serving model `PALIMPSEST_PROVIDER_MODEL` (default `gpt-4o-mini`). Clients request that exact model string. Restarting never adds it twice.
 
-Better still, add pool keys through the dashboard or the Operator API — they are encrypted at rest and never returned after creation. `PALIMPSEST_PROVIDER_API_KEY` is the single-key shortcut.
+Better still, add pool keys through the dashboard or the Operator API - they are encrypted at rest and never returned after creation. `PALIMPSEST_PROVIDER_API_KEY` is the single-key shortcut.
 
 ### 4. Create a user and call it
 
@@ -221,8 +221,8 @@ It should return `{"status":"ok"}`. Then open the dashboard and sign in with the
 | `make restart` | Restart the app container |
 | `make redis-cli` | Open redis-cli against the running Redis |
 | `make down` | Stop containers, keep data |
-| `make clean` | **Destructive** — also deletes the data volumes and the master key |
-| `make rotate-secrets` | **Destructive** — generate a fresh master key and operator key |
+| `make clean` | **Destructive** - also deletes the data volumes and the master key |
+| `make rotate-secrets` | **Destructive** - generate a fresh master key and operator key |
 | `make help` | List every target with its description |
 
 ### Development with hot reload
@@ -239,7 +239,7 @@ To work without containers instead, see [docs/USER_GUIDE.md](docs/USER_GUIDE.md)
 
 - The gateway binds `127.0.0.1:8000` by default. It has no TLS and no rate limiting, so keep it on loopback. Set `PALIMPSEST_BIND=0.0.0.0` in `.env` to expose it deliberately, behind a proxy.
 - `PALIMPSEST_PORT` changes the host port if 8000 is taken.
-- Redis is not published to the host at all — the app reaches it over the compose network. That avoids colliding with a locally installed Redis and keeps an unauthenticated store off the network.
+- Redis is not published to the host at all - the app reaches it over the compose network. That avoids colliding with a locally installed Redis and keeps an unauthenticated store off the network.
 - **The generated master key is the root of trust for every stored credential.** It lives in the `gateway_secrets` volume. `make clean` and `docker compose down -v` destroy it, making every stored pool key permanently undecryptable. Back up that volume, or set your own `PALIMPSEST_GATE_MASTER_KEY` in `.env` so you control it.
 
 ### If something goes wrong on first run
@@ -247,7 +247,7 @@ To work without containers instead, see [docs/USER_GUIDE.md](docs/USER_GUIDE.md)
 | Symptom | Cause and fix |
 | :--- | :--- |
 | `Bind for 127.0.0.1:8000 failed: port is already allocated` | Something else uses 8000. Use `PALIMPSEST_PORT=8010 docker compose up -d`. |
-| `failed to resolve reference "redis:..."` | Your Docker cannot pull images — often a proxy or an offline machine. Check `docker pull redis:8.2-alpine`. |
+| `failed to resolve reference "redis:..."` | Your Docker cannot pull images - often a proxy or an offline machine. Check `docker pull redis:8.2-alpine`. |
 | Containers start but never become healthy | Run `docker compose logs app`. Most often the image is still building, or a stale container is holding the port: `docker compose down`. |
 | `401` on every request | Send a user API key (`pgw_live_…`) for `/v1/*` and the operator key for `/dashboard/`. See steps 3 and 4 above. |
 | Chat returns `503` | No pool key can serve that model: check the model name, and the key's state in **Pool Keys** (a key the provider refused is suspended automatically). |
@@ -297,14 +297,14 @@ The consequence is useful: **give limited keys a cap and leave unlimited keys un
 
 ## Configuration
 
-Everything is configured through `PALIMPSEST_*` environment variables. The full reference — every knob, its default and its bounds — is in [docs/USER_GUIDE.md](docs/USER_GUIDE.md).
+Everything is configured through `PALIMPSEST_*` environment variables. The full reference - every knob, its default and its bounds - is in [docs/USER_GUIDE.md](docs/USER_GUIDE.md).
 
 | Variable | Default | Description |
 | :--- | :--- | :--- |
 | `PALIMPSEST_GATE_MASTER_KEY` | generated | Fernet key encrypting credentials at rest. Not recoverable. |
 | `PALIMPSEST_GATE_OPERATOR_KEY` | generated | Bootstrap operator key, seeded idempotently on startup. |
 | `PALIMPSEST_LOG_OPERATOR_KEY` | `true` | Print the operator key and dashboard URL in the startup log. |
-| `PALIMPSEST_PROVIDER_API_KEY` | — | Single-key shortcut: added to the pool on startup. |
+| `PALIMPSEST_PROVIDER_API_KEY` | - | Single-key shortcut: added to the pool on startup. |
 | `PALIMPSEST_PROVIDER_NAME` | `openai` | Provider of that key: `openai`, `anthropic`, `google`, `openrouter`, `mistral`, `groq` or `custom`. |
 | `PALIMPSEST_PROVIDER_MODEL` | `gpt-4o-mini` | Model that key serves; clients request this string. |
 | `PALIMPSEST_PROVIDER_TIMEOUT` | `60` | Seconds per provider attempt. |
@@ -313,7 +313,7 @@ Everything is configured through `PALIMPSEST_*` environment variables. The full 
 | `PALIMPSEST_RETRY_BUDGET` | `3` | Retries after the first attempt (so at most 4 provider calls). Spending it returns `budget_exhausted`. |
 | `PALIMPSEST_COOLDOWN_SECONDS` | `60` | How long a key rests after a transient failure. |
 | `PALIMPSEST_VERBATIM_TURNS_N` | `4` | Recent turns re-sent verbatim when a provider fails over. |
-| `PALIMPSEST_USER_DAILY_CAP` | — | Per-user daily request cap. Unset = no per-user cap. |
+| `PALIMPSEST_USER_DAILY_CAP` | - | Per-user daily request cap. Unset = no per-user cap. |
 
 *13 of ~40 settings; full reference with defaults and bounds → [docs/USER_GUIDE.md](docs/USER_GUIDE.md)*
 
@@ -323,7 +323,7 @@ Most of these are also tunable at runtime through the Operator API, without a re
 
 Errors always use the OpenAI envelope: `{"error": {"type", "message", "param", "code"}}`.
 
-### User realm — authenticate with a user API key
+### User realm - authenticate with a user API key
 
 | Endpoint | Method | Description |
 | :--- | :--- | :--- |
@@ -347,7 +347,7 @@ curl http://localhost:8000/v1/chat/completions \
 
 Send `X-Session-ID` on every request in a conversation. Omit it and the gateway issues and returns a fresh one, starting a new session. Concurrent turns on the same session are serialized; a turn that cannot get the lock within the wait budget is rejected with `423 session_busy`.
 
-### Operator realm — authenticate with an operator key
+### Operator realm - authenticate with an operator key
 
 > The operator API is served under **two** prefixes. Both are current and both are documented here: `/v1/operator/*` for the pool, and `/operator/v1/*` for operator keys, accounts and configuration.
 
@@ -436,7 +436,7 @@ Generate the master key with: `python -c "from cryptography.fernet import Fernet
 | `app/pool/` | Provider key pool: registry, per-key state, quota reading. |
 | `app/router/` | Quota-aware selection, error classification, bounded failover. |
 | `app/session/` | Per-user session store and the per-turn lock. |
-| `app/context/` | Failover context reconstruction — the verbatim window handed to a replacement provider. |
+| `app/context/` | Failover context reconstruction - the verbatim window handed to a replacement provider. |
 | `app/settlement/` | Single settlement point: admission, metering, quota reads. |
 | `app/usage/` | Token counters, hourly and daily statistics, operator-set prices. |
 | `app/alerts.py`, `app/audit.py` | Alert rules and webhook delivery; the operator audit trail. |
@@ -448,7 +448,7 @@ Generate the master key with: `python -c "from cryptography.fernet import Fernet
 
 - `.env` holds real secrets and is gitignored. `.dockerignore` keeps it out of the build context and out of the image.
 - Provider credentials and operator keys are Fernet-encrypted at rest in Redis. Raw key material is returned only once, at creation.
-- Redis is not published to the host — it is reachable only on the compose network, and holds encrypted credentials.
+- Redis is not published to the host - it is reachable only on the compose network, and holds encrypted credentials.
 - The generated master key lives in the `gateway_secrets` volume. Losing it makes every stored credential undecryptable; see the notes above.
 - `PALIMPSEST_CORS_ORIGINS` defaults to none. The dashboard is same-origin and non-browser clients ignore CORS, so nothing extra is needed. Add a JSON array only if a browser app on another origin must call the gateway.
 - Account signup is open by default. Before exposing the gateway, set `PALIMPSEST_ALLOW_SIGNUP=false` and a `PALIMPSEST_USER_DAILY_CAP`, so strangers cannot spend your provider keys.
@@ -459,10 +459,10 @@ Report vulnerabilities privately to the maintainers rather than in a public issu
 
 ## License
 
-MIT licensed — see [LICENSE](LICENSE) for the full text.
+MIT licensed - see [LICENSE](LICENSE) for the full text.
 
 ## Need help?
 
 - Report bugs / ask questions via [GitHub Issues](https://github.com/hammrouni/palimpsest-gateway/issues)
-- Private vulnerability reports: send an email to the maintainers at `contact@palimpsest.com`
+- Private vulnerability reports: send an email to the maintainers at `hammrouni.khaled@gmail.com`
 
