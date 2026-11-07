@@ -263,8 +263,11 @@ class PoolRegistry:
         if not await self._conditional_hset(_record_key(key_id), mapping):
             raise KeyNotFoundError(key_id)
         record.update(mapping)
-        if "models" in mapping and get_settings().share_models_by_provider:
-            await self._share_models(key_id, record["provider"], mapping["models"])
+        if "models" in mapping:
+            # A removed model must not linger as "paused" in the operator views.
+            await self._forget_model_pauses(key_id, set(data.models or ()))
+            if get_settings().share_models_by_provider:
+                await self._share_models(key_id, record["provider"], mapping["models"])
         state = await self.effective_state(key_id)
         updated = self._to_key_record(record, state)
         if "reset_at" in mapping or "reset_period_hours" in mapping:
@@ -280,7 +283,8 @@ class PoolRegistry:
         for other in await self.list():
             if other.id == key_id or other.provider.value != provider:
                 continue
-            await self._conditional_hset(_record_key(other.id), {"models": models_json})
+            if await self._conditional_hset(_record_key(other.id), {"models": models_json}):
+                await self._forget_model_pauses(other.id, set(json.loads(models_json)))
 
     async def suspend(self, key_id: str, operator_id: str | None = None) -> KeyRecord:
         """Exclude the key from selection at once. Idempotent.
@@ -393,11 +397,24 @@ class PoolRegistry:
                 best = until
         return best
 
-    async def _cooling_models(self, key_id: str) -> list[dict]:
+    async def _forget_model_pauses(self, key_id: str, keep: set[str] | frozenset[str]) -> None:
+        """Delete the per-model pauses of models a key no longer serves."""
+        prefix = _state_key(key_id) + ":model:"
+        async for raw in self.redis.scan_iter(match=prefix + "*"):
+            name = raw.decode() if isinstance(raw, bytes) else raw
+            if name[len(prefix):] not in keep:
+                await self.redis.delete(name)
+
+    async def _cooling_models(
+        self, key_id: str, serving: frozenset[str] | None = None
+    ) -> list[dict]:
+        """Models paused on a key. With ``serving``, models it no longer serves are left out."""
         prefix = _state_key(key_id) + ":model:"
         cooling = []
         async for raw in self.redis.scan_iter(match=prefix + "*"):
             name = raw.decode() if isinstance(raw, bytes) else raw
+            if serving is not None and name[len(prefix):] not in serving:
+                continue
             ttl = await self.redis.ttl(name)
             if ttl is not None and ttl > 0:
                 reason = await self.redis.hget(name, "reason")
@@ -467,7 +484,9 @@ class PoolRegistry:
     async def list_states(self) -> list[KeyStateView]:
         """All keys + effective state + reset_at + time-remaining-on-marker."""
         views = []
-        for record in await self.list():
+        records = await self.list()
+        serving = self.serving_models(records)
+        for record in records:
             seconds_remaining = None
             reason = None
             if record.state in (KeyState.EXHAUSTED, KeyState.COOLDOWN):
@@ -485,7 +504,7 @@ class PoolRegistry:
                     reset_at=record.reset_at,
                     seconds_remaining=seconds_remaining,
                     reason=reason or None,
-                    cooling_models=await self._cooling_models(record.id),
+                    cooling_models=await self._cooling_models(record.id, serving[record.id]),
                 )
             )
         return views

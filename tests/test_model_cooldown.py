@@ -5,8 +5,8 @@ import pytest
 from fakeredis.aioredis import FakeRedis
 
 import app.router.failover as failover_module
-from app.pool.models import KeyCreate, KeyState, Provider
-from app.pool.registry import PoolRegistry
+from app.pool.models import KeyCreate, KeyState, KeyUpdate, Provider
+from app.pool.registry import PoolRegistry, _model_state_key
 from app.provider.adapter import AttemptResult, ProviderAttemptError
 from app.router.exhaustion import PoolExhaustedError, render_exhausted
 from app.router.failover import execute_with_failover
@@ -235,3 +235,16 @@ async def test_share_models_ignores_other_providers_and_suspended_keys(registry,
     assert [k.id for k in await registry.routable_keys(model="g")] == [other]
     assert {k.id for k in await registry.routable_keys(model="secret")} == set()
     assert a in {k.id for k in await registry.routable_keys(model="a")}
+
+
+@pytest.mark.asyncio
+async def test_removed_models_leave_the_paused_list_and_their_pause_is_deleted(registry):
+    key = await registry.create(KeyCreate(provider=Provider.OPENROUTER, models=["a", "b"], key="sk-1"))
+    await registry.mark_cooldown(key.id, model="a", seconds=600, reason="model_unavailable")
+    await registry.mark_cooldown(key.id, model="b", seconds=600, reason="model_unavailable")
+
+    await registry.update(key.id, KeyUpdate(models=["b"]))
+
+    view = next(v for v in await registry.list_states() if v.id == key.id)
+    assert [c["model"] for c in view.cooling_models] == ["b"]
+    assert await registry.redis.exists(_model_state_key(key.id, "a")) == 0
