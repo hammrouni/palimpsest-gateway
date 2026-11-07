@@ -263,7 +263,7 @@ Supported providers are `openai`, `anthropic`, `google`, `openrouter`, `mistral`
 | State | Meaning |
 | :--- | :--- |
 | `active` | Eligible for selection. |
-| `cooldown` | Rested after a transient failure; returns to `active` when `COOLDOWN_SECONDS` elapses. |
+| `cooldown` | Rested after a transient failure; returns to `active` when the pause ends: the provider's own retry hint, or `COOLDOWN_SECONDS` when it gives none. Usually only the failing *model* rests and the key keeps serving its others. |
 | `exhausted` | Out of quota or hard limit; stays out until its reset time or a manual resume. |
 | `suspended` | Set by an operator and stays out until resumed. |
 
@@ -332,7 +332,7 @@ The pool treats every key the same way. What changes behaviour is the cap you se
 
 ### Order of selection
 
-For a request, the candidates are the `active` keys that list the requested model string and are not cooling for that model. They are ordered:
+A [master model](#model-sharing-and-master-models), if one is set, replaces the requested model first. Then the candidates are the `active` keys that serve the model string (their own list, or the provider's combined list with `share_models_by_provider`) and are not cooling for that model. They are ordered:
 
 1. Capped keys with requests left, most left first. A key whose cap is used up is skipped until its window resets.
 2. Uncapped keys.
@@ -384,13 +384,15 @@ When a provider attempt fails, the gateway classifies the error and retries on t
 
 | Provider error | Gateway behaviour |
 | :--- | :--- |
-| Rate limit | Key enters `cooldown`; try the next candidate. |
-| Quota exhausted / payment required | Key enters `exhausted`; try the next candidate. |
-| Transient server error | Key enters `cooldown`; try the next candidate. |
+| Brief rate limit (429) | The **model** rests on that key for the provider's retry hint (or `COOLDOWN_SECONDS`); the key keeps serving its other models. Try the next candidate. |
+| Quota exhausted / payment required (402, or a 429/403/400 saying the quota or credits are spent) | The key enters `exhausted` until the provider's reset time; try the next candidate. |
+| Transient server error (5xx, timeout) | The model rests on that key; try the next candidate. |
+| Model not available on the key (404, or a model-scoped 403) | The model is paused for 24 hours on that key; the key stays active. A 404 pauses it on every key of that provider. Try the next candidate. |
+| Gateway cannot reach the provider (DNS, connection refused) | Nothing is paused, because the key and model are not at fault; try the next candidate. |
 | Provider refuses the key (401 / 403) | Key is **suspended** (`last_modified_by: gateway:auth_rejected`); try the next candidate. Resume it from the dashboard once fixed. |
 | Bad request or other client error | **Not retryable.** Returned to the client — retrying cannot help. |
 
-Selection prefers a candidate that has remaining quota, so a nearly-exhausted key is used last rather than first.
+Selection prefers a candidate that has remaining quota, so a nearly-exhausted key is used last rather than first. Every pause records its [reason](#why-a-key-or-model-is-paused), which the dashboard shows with the return time.
 
 ### Failover context
 
@@ -608,7 +610,11 @@ The running version is shown in the dashboard's **System** section and in `GET /
 
 **You cannot sign in to the dashboard** — you need an operator key, not a user key. The generated one is at `docker compose exec app cat /app/.secrets/operator_key`; create your own under Accounts.
 
-**Every request returns `pool_exhausted`** — no usable key. Check `GET /v1/operator/pool/utilization`. Keys sitting in `cooldown` or `exhausted` are skipped; resume them or add keys.
+**Every request returns `pool_exhausted`** — no usable key. Check `GET /v1/operator/pool/utilization`. Keys sitting in `cooldown` or `exhausted` are skipped; resume them or add keys. If a master model is set, make sure some key still serves it.
+
+**Requests are answered by a different model than the client asked for** — a master model is on. See the ON/OFF strip on *Utilization & Failover*, or `GET /operator/v1/config` (`master_model`, `provider_master_models`).
+
+**A key's counter disagrees with the provider** — the gateway counts only its own requests. For OpenRouter keys run the [limit sync](#syncing-a-keys-limits-with-openrouter).
 
 **Every request returns `service_unavailable`** — Redis is unreachable. This fails closed by design: the gateway refuses to serve a request it cannot meter.
 
