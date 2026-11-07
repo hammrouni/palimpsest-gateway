@@ -19,6 +19,8 @@ from pydantic import (
 )
 from pydantic_settings import BaseSettings
 
+from app import __version__
+
 # Settings an operator may read and change at runtime. Anything else is
 # infrastructure or a credential and is neither returned nor writable.
 TUNABLE_FIELDS: tuple[str, ...] = (
@@ -44,7 +46,7 @@ class Settings(BaseSettings):
     """Runtime configuration for the gateway."""
 
     project_name: str = "palimpsest-gateway"
-    project_version: str = "2.1.0"
+    project_version: str = __version__
 
     # Single-key shortcut: on startup PROVIDER_API_KEY is added to the pool for
     # PROVIDER_NAME, serving PROVIDER_MODEL. Further keys go through the pool API.
