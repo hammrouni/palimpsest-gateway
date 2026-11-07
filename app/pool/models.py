@@ -178,6 +178,8 @@ class KeyStateView(BaseModel):
     state: KeyState
     reset_at: datetime
     seconds_remaining: float | None = None
+    # Why the key is held back (see ``classify.pause_reason``), if known.
+    reason: str | None = None
     # Per-model cooldowns on an otherwise active key:
-    # ``[{"model": str, "seconds_remaining": float}]``.
+    # ``[{"model": str, "seconds_remaining": float, "reason": str | None}]``.
     cooling_models: list[dict] = Field(default_factory=list)

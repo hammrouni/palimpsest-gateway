@@ -199,6 +199,7 @@ async def utilization_view(*, redis: Redis) -> dict:
                 "seconds_to_reset": seconds_to_reset,
                 "cooldown_remaining_s": cooldown_remaining_s,
                 "exhausted_reset_at": exhausted_reset_at,
+                "pause_reason": state_view.reason if state_view else None,
                 "token_cap": token_cap,
                 "tokens_used": tokens_used_now,
                 "tokens_remaining": (

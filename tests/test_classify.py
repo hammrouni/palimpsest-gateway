@@ -5,7 +5,7 @@ import pytest
 
 from app.pool.models import Provider
 from app.provider.adapter import ProviderAttemptError
-from app.router.classify import classify
+from app.router.classify import classify, pause_reason
 
 
 def _error(status_code: int | None, message: str = "generic error") -> ProviderAttemptError:
@@ -206,3 +206,29 @@ def test_429_free_tier_daily_limit_stays_transient():
         _error(429, "Rate limit exceeded: free-models-per-day. Add 10 credits to unlock 1000 free model requests per day")
     )
     assert result.state == "transient"
+
+
+# -- pause_reason: why a key or model is held back -------------------------------
+
+
+def _err(status, message=""):
+    return ProviderAttemptError(status, "x", message, Provider.OPENROUTER)
+
+
+@pytest.mark.parametrize(
+    ("status", "message", "expected"),
+    [
+        (429, "Rate limit exceeded: free-models-per-day. Add 10 credits", "daily_limit"),
+        (429, "Too many requests, slow down", "rate_limit"),
+        (429, "no credits remaining on this account", "no_credits"),
+        (402, "", "no_credits"),
+        (500, "Cannot connect to host openrouter.ai:443 [Name or service not known]", "network"),
+        (503, "overloaded", "provider_error"),
+        (404, "model not found", "model_unavailable"),
+        (401, "bad key", "auth"),
+        (403, "only available on agentic harnesses", "model_unavailable"),
+        (403, "forbidden", "auth"),
+    ],
+)
+def test_pause_reason(status, message, expected):
+    assert pause_reason(_err(status, message)) == expected

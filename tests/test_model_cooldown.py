@@ -139,6 +139,70 @@ def test_long_waits_keep_the_quota_reset_wording():
 
 
 @pytest.mark.asyncio
+async def test_pause_reason_is_stored_and_listed(registry):
+    key_id = await _key(registry, ["m1", "m2"])
+    await registry.mark_cooldown(key_id, model="m1", seconds=3600, reason="daily_limit")
+
+    (view,) = await registry.list_states()
+
+    assert view.cooling_models[0]["model"] == "m1"
+    assert view.cooling_models[0]["reason"] == "daily_limit"
+
+    await registry.mark_exhausted(key_id, seconds=7200, reason="no_credits")
+    (view,) = await registry.list_states()
+
+    assert view.state == KeyState.EXHAUSTED
+    assert view.reason == "no_credits"
+    assert 7000 < view.seconds_remaining <= 7200
+
+
+@pytest.mark.asyncio
+async def test_a_404_pauses_the_model_on_every_key_of_the_provider(registry, monkeypatch):
+    first = await _key(registry, ["gone"], "sk-a")
+    second = await _key(registry, ["gone"], "sk-b")
+    calls = []
+
+    async def fake_attempt(reg, key_id, model, messages, **params):
+        calls.append(key_id)
+        return AttemptResult(
+            ok=False, error=ProviderAttemptError(404, "not_found", "no such model", Provider.OPENROUTER)
+        )
+
+    monkeypatch.setattr(failover_module, "adapter_attempt", fake_attempt)
+
+    with pytest.raises(PoolExhaustedError):
+        await execute_with_failover(registry, "gone", MESSAGES)
+
+    assert len(calls) == 1  # one probe learned it for both keys
+    for key_id in (first, second):
+        assert await registry.routable_keys(model="gone") == []
+        assert await registry.effective_state(key_id) == KeyState.ACTIVE
+
+
+@pytest.mark.asyncio
+async def test_a_dns_failure_pauses_neither_key_nor_model(registry, monkeypatch):
+    key_id = await _key(registry, ["m"])
+
+    async def fake_attempt(reg, key_id_, model, messages, **params):
+        return AttemptResult(
+            ok=False,
+            error=ProviderAttemptError(
+                500, "api_error", "Cannot connect to host openrouter.ai:443 ssl:default [Name or service not known]",
+                Provider.OPENROUTER,
+            ),
+        )
+
+    monkeypatch.setattr(failover_module, "adapter_attempt", fake_attempt)
+
+    with pytest.raises(PoolExhaustedError):
+        await execute_with_failover(registry, "m", MESSAGES)
+
+    assert [k.id for k in await registry.routable_keys(model="m")] == [key_id]
+    (view,) = await registry.list_states()
+    assert view.cooling_models == []
+
+
+@pytest.mark.asyncio
 async def test_share_models_by_provider_lets_every_key_serve_the_union(registry, monkeypatch):
     from app.config import get_settings
 

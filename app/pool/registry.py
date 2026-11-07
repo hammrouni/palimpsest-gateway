@@ -387,7 +387,16 @@ class PoolRegistry:
             name = raw.decode() if isinstance(raw, bytes) else raw
             ttl = await self.redis.ttl(name)
             if ttl is not None and ttl > 0:
-                cooling.append({"model": name[len(prefix):], "seconds_remaining": float(ttl)})
+                reason = await self.redis.hget(name, "reason")
+                if isinstance(reason, bytes):
+                    reason = reason.decode()
+                cooling.append(
+                    {
+                        "model": name[len(prefix):],
+                        "seconds_remaining": float(ttl),
+                        "reason": reason or None,
+                    }
+                )
         return sorted(cooling, key=lambda item: item["model"])
 
     async def effective_state(self, key_id: str) -> KeyState:
@@ -417,12 +426,18 @@ class PoolRegistry:
         except ValueError as exc:
             raise KeyNotFoundError(key_id) from exc
 
-    async def mark_exhausted(self, key_id: str, seconds: float | None = None) -> None:
+    async def mark_exhausted(
+        self, key_id: str, seconds: float | None = None, reason: str | None = None
+    ) -> None:
         """Exclude the whole key for ``seconds``, or until its next reset boundary if not given."""
-        await self._mark(key_id, KeyState.EXHAUSTED, ttl_seconds=seconds)
+        await self._mark(key_id, KeyState.EXHAUSTED, ttl_seconds=seconds, reason=reason)
 
     async def mark_cooldown(
-        self, key_id: str, model: str | None = None, seconds: float | None = None
+        self,
+        key_id: str,
+        model: str | None = None,
+        seconds: float | None = None,
+        reason: str | None = None,
     ) -> None:
         """Exclude for ``seconds``, or ``cooldown_seconds`` when not given.
 
@@ -433,6 +448,7 @@ class PoolRegistry:
             KeyState.COOLDOWN,
             ttl_seconds=seconds or get_settings().cooldown_seconds,
             model=model,
+            reason=reason,
         )
 
     async def list_states(self) -> list[KeyStateView]:
@@ -440,10 +456,13 @@ class PoolRegistry:
         views = []
         for record in await self.list():
             seconds_remaining = None
+            reason = None
             if record.state in (KeyState.EXHAUSTED, KeyState.COOLDOWN):
                 ttl = await self.redis.ttl(_state_key(record.id))
                 if ttl is not None and ttl >= 0:
                     seconds_remaining = float(ttl)
+                raw_reason = await self.redis.hget(_state_key(record.id), "reason")
+                reason = raw_reason.decode() if isinstance(raw_reason, bytes) else raw_reason
             views.append(
                 KeyStateView(
                     id=record.id,
@@ -452,6 +471,7 @@ class PoolRegistry:
                     state=record.state,
                     reset_at=record.reset_at,
                     seconds_remaining=seconds_remaining,
+                    reason=reason or None,
                     cooling_models=await self._cooling_models(record.id),
                 )
             )
@@ -479,6 +499,7 @@ class PoolRegistry:
         state: KeyState,
         ttl_seconds: float | None = None,
         model: str | None = None,
+        reason: str | None = None,
     ) -> None:
         record = await self._require_record(key_id)
         now = datetime.now(UTC)
@@ -514,7 +535,12 @@ class PoolRegistry:
         pipe = self.redis.pipeline(transaction=True)
         pipe.hset(
             state_key,
-            mapping={"state": state.value, "until": until, "since": since},
+            mapping={
+                "state": state.value,
+                "until": until,
+                "since": since,
+                **({"reason": reason} if reason else {}),
+            },
         )
         pipe.expire(state_key, max(1, math.ceil(ttl_seconds)))
         await pipe.execute()

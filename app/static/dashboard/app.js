@@ -1772,6 +1772,7 @@ function metricCard(label, value, detail, fraction) {
   if (fraction !== null && fraction !== undefined) {
     card.append(meter(fraction));
   }
+  modelList: null,
   card.append(el('span', 'metric-detail', detail));
   return card;
 }
@@ -2020,6 +2021,23 @@ function drawUtilizationKeys() {
   const rowFor = (key) => {
     const name = el('td');
     name.textContent = keyName(key);
+const PAUSE_REASONS = {
+  no_credits: 'out of credits',
+  daily_limit: 'daily limit reached',
+  rate_limit: 'rate limited',
+  network: 'network error',
+  provider_error: 'provider error',
+  model_unavailable: 'model not available',
+  auth: 'key refused',
+};
+
+/* "daily limit reached, back in 7h 14m (at 01:00)": the cause, the wait and the clock time. */
+function backIn(seconds, reason) {
+  const wait = Math.max(0, Math.round(seconds || 0));
+  const text = 'back in ' + humanizeSeconds(wait) + ' (at ' + formatDate(new Date(Date.now() + wait * 1000).toISOString()) + ')';
+  return reason ? reason + ', ' + text : text;
+}
+
     name.title = 'Key ' + key.key_id;
 
     /* Everything about a key stays on its one row, notes included. */
@@ -2028,13 +2046,15 @@ function drawUtilizationKeys() {
     status.append(statusLine);
     statusLine.append(el('span', 'badge badge--' + key.state, STATE_LABELS[key.state] || key.state));
     if (key.state === 'cooldown' && key.cooldown_remaining_s) {
-      statusLine.append(el('span', 'note', 'back in ' + humanizeSeconds(key.cooldown_remaining_s)));
+      statusLine.append(el('span', 'note', backIn(key.cooldown_remaining_s, reason)));
+    } else if (key.state === 'exhausted' && key.exhausted_reset_at) {
+      const wait = (Date.parse(key.exhausted_reset_at) - Date.now()) / 1000;
+      statusLine.append(el('span', 'note', backIn(wait, reason)));
     }
-    /* A model can be paused on its own while the key keeps serving the others. */
-    for (const cooling of key.cooling_models || []) {
-      statusLine.append(
-        el('span', 'note', cooling.model + ' paused, back in ' + humanizeSeconds(cooling.seconds_remaining))
-      );
+    /* Per-model pauses can be long lists; they live in "Unavailable models", not in this row. */
+    const paused = (key.cooling_models || []).length;
+    if (paused) {
+      statusLine.append(el('span', 'note', plural(paused, 'model') + ' paused'));
     }
 
     const tr = el('tr');
@@ -2090,6 +2110,8 @@ function failoverKeyName(id) {
 }
 
 function drawEvents() {
+    /* Say why a key is held back and when it returns: "back in 7h 14m (at 01:00)". */
+    const reason = PAUSE_REASONS[key.pause_reason];
   if (!health.events.length) {
     health.eventTable.replaceChildren(
       el(
@@ -2138,6 +2160,46 @@ function drawEvents() {
       keys,
       el('td', null, String(event.status)),
       request
+/* Models a key cannot serve right now, merged across keys: one card per model, not a table
+   row, so long model ids wrap instead of forcing a sideways scroll. */
+function drawUnavailableModels() {
+  const keys = health.utilization ? health.utilization.keys : [];
+  const byModel = new Map();
+  for (const key of keys) {
+    for (const cooling of key.cooling_models || []) {
+      const entry = byModel.get(cooling.model) || { model: cooling.model, keys: 0, seconds: 0, reason: null, providers: new Set() };
+      entry.keys += 1;
+      entry.seconds = Math.max(entry.seconds, cooling.seconds_remaining || 0);
+      entry.reason = entry.reason || cooling.reason;
+      if (key.provider) entry.providers.add(key.provider);
+      byModel.set(cooling.model, entry);
+    }
+  }
+  const entries = [...byModel.values()].sort((a, b) => b.seconds - a.seconds || a.model.localeCompare(b.model));
+  if (!entries.length) {
+    health.modelList.replaceChildren(el('p', 'note', 'No models are paused.'));
+    return;
+  }
+  const list = el('div', 'model-cards');
+  for (const entry of entries) {
+    const card = el('div', 'model-card');
+    card.append(el('div', 'model-card__name', entry.model));
+    const meta = el('div', 'cell-line');
+    const reason = PAUSE_REASONS[entry.reason] || 'paused';
+    meta.append(
+      el('span', 'badge badge--' + (entry.reason === 'model_unavailable' ? 'suspended' : 'cooldown'), reason),
+      el('span', 'note', backIn(entry.seconds, null)),
+      el('span', 'note', [...entry.providers].join(', ') + ' · ' + plural(entry.keys, 'key'))
+    );
+    card.append(meta);
+    list.append(card);
+  }
+  health.modelList.replaceChildren(
+    el('p', 'note', 'A model is paused on a key when the provider reports it missing, limited or failing. The key keeps serving its other models.'),
+    list
+  );
+}
+
     );
     tbody.append(tr);
   }
@@ -2228,6 +2290,7 @@ async function loadHealth() {
       health.utilization.keys.length + ' key(s) · ' + health.events.length + ' failover event(s).',
       'ok'
     );
+  drawUnavailableModels();
   }
   drawHealth();
 }
@@ -2328,6 +2391,7 @@ function buildCreateForm(modal) {
   form.noValidate = true;
 
   const displayName = el('input');
+  health.modelList = el('div', 'model-list');
   displayName.type = 'text';
   displayName.name = 'displayName';
   displayName.id = 'new-account-name';
@@ -2348,6 +2412,8 @@ function buildCreateForm(modal) {
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({ display_name: displayName.value.trim() }),
         }),
+      el('h3', null, 'Unavailable models'),
+      health.modelList,
         async (created) => {
           form.reset();
           /* The one-time key gets its own dismissible block rather than a status

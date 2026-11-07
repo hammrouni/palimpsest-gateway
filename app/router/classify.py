@@ -42,6 +42,20 @@ _MODEL_SCOPED_403_RE = re.compile(
     r"model.*not.*available|capability.*not.*enabled|not supported by this key)"
 )
 
+_DAILY_LIMIT_RE = re.compile(r"(?i)(per[-\s]?day|daily)")
+# Our own host cannot reach the provider (DNS, refused, no route). Not the key's
+# or the model's fault, so nothing is paused for it.
+_CONNECTIVITY_RE = re.compile(
+    r"(?i)(cannot connect to host|name or service not known|"
+    r"temporary failure in name resolution|connection refused|network is unreachable|"
+    r"no route to host)"
+)
+
+_NETWORK_RE = re.compile(
+    r"(?i)(cannot connect|name or service not known|connection (reset|refused|error)|"
+    r"timed?[\s_-]?out|temporary failure in name resolution)"
+)
+
 _CONTEXT_EXCEEDED_MESSAGE = (
     "The conversation is too long for the selected model's context window; "
     "start a new session or choose a model with a larger context."
@@ -133,3 +147,37 @@ def classify(error: ProviderAttemptError) -> Classification:
     if status == 400:
         return Classification("fatal", 400, "invalid_request", _INVALID_REQUEST_MESSAGE)
     return Classification("fatal", 502, "upstream_rejected", _UPSTREAM_REJECTED_MESSAGE)
+
+
+def pause_reason(error: ProviderAttemptError) -> str:
+    """Short operator-facing cause of a pause: why a key or model is held back.
+
+    One of ``no_credits``, ``daily_limit``, ``rate_limit``, ``network``,
+    ``provider_error``, ``model_unavailable``, ``auth``, ``other``. Stored with
+    the pause so the dashboard can say why and when, not just that it is paused.
+    """
+    status = error.status_code
+    message = error.message or ""
+    if status == 402 or (_HARD_QUOTA_RE.search(message) and status in (429, 403, 400)):
+        return "no_credits"
+    if status == 429 or (status in (400, 403) and _QUOTA_MARKER_RE.search(message)):
+        return "daily_limit" if _DAILY_LIMIT_RE.search(message) else "rate_limit"
+    if status in (401, 403):
+        return "model_unavailable" if _MODEL_SCOPED_403_RE.search(message) else "auth"
+    if status == 404:
+        return "model_unavailable"
+    if status is None or status == 408 or _NETWORK_RE.search(message):
+        return "network"
+    if 500 <= status <= 599:
+        return "provider_error"
+    return "other"
+
+
+def is_connectivity_error(error: ProviderAttemptError) -> bool:
+    """True when the gateway could not reach the provider at all.
+
+    Such a failure says nothing about the key or model, so the failover loop
+    must not pause either; the request is retried and, if the link stays down,
+    ends as a 503.
+    """
+    return _CONNECTIVITY_RE.search(error.message or "") is not None

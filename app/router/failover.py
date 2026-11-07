@@ -17,7 +17,7 @@ from app.pool.models import Provider
 from app.pool.registry import KeyNotFoundError, PoolRegistry
 from app.provider.adapter import AttemptResult, CandidateGoneError, ProviderAttemptError
 from app.provider.adapter import attempt as adapter_attempt
-from app.router.classify import Classification, classify
+from app.router.classify import Classification, classify, is_connectivity_error, pause_reason
 from app.router.exhaustion import PoolExhaustedError
 from app.router.rebuild import RebuildHook, identity_rebuild
 from app.router.retry_hint import get_quota_reset_seconds, retry_after_seconds
@@ -27,6 +27,37 @@ logger = logging.getLogger("palimpsest.failover")
 
 SYSTEM_OPERATOR_ID = "gateway:auth_rejected"
 """``last_modified_by`` on a key the gateway suspended after a 401/403."""
+
+
+def _pause_text(state: str, seconds: int | None) -> str:
+    """How long the key or model is held back, for the operator log."""
+    if state == "fatal":
+        return "none"
+    if state == "rejected":
+        return "until-operator-resumes"
+    if seconds is None:
+        return "default"
+    hours, rest = divmod(int(seconds), 3600)
+    minutes, secs = divmod(rest, 60)
+    parts = ((hours, "h"), (minutes, "m"), (secs, "s"))
+    return "".join(f"{n}{u}" for n, u in parts if n) or "0s"
+
+
+async def _pause_model_for_provider(
+    registry: PoolRegistry,
+    candidate,
+    model: str,
+    seconds: int,
+    reason: str,
+) -> None:
+    """Pause ``model`` on every other active key of the candidate's provider."""
+    for record in await registry.list():
+        if record.id == candidate.key_id or record.provider != candidate.provider:
+            continue
+        try:
+            await registry.mark_cooldown(record.id, model=model, seconds=seconds, reason=reason)
+        except KeyNotFoundError:
+            continue
 
 
 async def _empty():
@@ -237,25 +268,20 @@ async def execute_with_failover(
             return result, trace
 
         classification = classify(result.error)
-        # The provider's own text says which limit was hit. Operator log only,
-        # key-shaped strings removed, on one line.
-        logger.warning(
-            "provider attempt failed key=%s provider=%s model=%s status=%s class=%s detail=%s",
-            candidate.key_id,
-            candidate.provider.value,
-            model,
-            result.error.status_code,
-            classification.state,
-            " ".join(redact(result.error.message or "").split())[:600],
-        )
+        reason = pause_reason(result.error)
+        pause_seconds: int | None = None
+        connectivity = is_connectivity_error(result.error)
         try:
-            if classification.state == "transient":
+            if classification.state == "transient" and connectivity:
+                # We could not reach the provider (DNS, refused). The key and
+                # model are fine, so nothing is paused; the loop just rotates.
+                pass
+            elif classification.state == "transient":
                 # Only this model cools down; the key's other models stay
                 # routable. The provider's own retry hint wins over the default.
+                pause_seconds = retry_after_seconds(result.error.message, result.headers)
                 await registry.mark_cooldown(
-                    candidate.key_id,
-                    model=model,
-                    seconds=retry_after_seconds(result.error.message, result.headers),
+                    candidate.key_id, model=model, seconds=pause_seconds, reason=reason
                 )
             elif classification.state == "exhausted":
                 # A spent quota is per key, so the whole key pauses. The pause
@@ -264,20 +290,44 @@ async def execute_with_failover(
                 reset_seconds = get_quota_reset_seconds(result.headers)
                 if reset_seconds is None:
                     reset_seconds = retry_after_seconds(result.error.message, result.headers)
-                await registry.mark_exhausted(candidate.key_id, seconds=reset_seconds)
+                pause_seconds = reset_seconds
+                await registry.mark_exhausted(
+                    candidate.key_id, seconds=reset_seconds, reason=reason
+                )
             elif classification.state == "rejected":
                 # The credential itself was refused: suspend it for the operator.
                 await registry.suspend(candidate.key_id, operator_id=SYSTEM_OPERATOR_ID)
             elif classification.state == "model_scoped":
                 # The key works but not for this model (404, or a model-scoped 403):
                 # skip this model on this key for 24 hours. The key stays active.
+                pause_seconds = 86400  # 24 hours
                 await registry.mark_cooldown(
-                    candidate.key_id,
-                    model=model,
-                    seconds=86400,  # 24 hours
+                    candidate.key_id, model=model, seconds=pause_seconds, reason=reason
                 )
+                if result.error.status_code == 404:
+                    # A model the provider no longer lists is gone for every key
+                    # of that provider: pause it on all of them now instead of
+                    # spending one retry per key to learn the same thing.
+                    await _pause_model_for_provider(
+                        registry, candidate, model, pause_seconds, reason
+                    )
         except KeyNotFoundError:
             pass
+
+        # The provider's own text says which limit was hit. Operator log only,
+        # key-shaped strings removed, on one line.
+        logger.warning(
+            "provider attempt failed key=%s provider=%s model=%s status=%s class=%s "
+            "reason=%s pause=%s detail=%s",
+            candidate.key_id,
+            candidate.provider.value,
+            model,
+            result.error.status_code,
+            classification.state,
+            reason,
+            "none" if connectivity else _pause_text(classification.state, pause_seconds),
+            " ".join(redact(result.error.message or "").split())[:600],
+        )
 
         attempts.append(
             AttemptRecord(
