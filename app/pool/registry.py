@@ -263,11 +263,24 @@ class PoolRegistry:
         if not await self._conditional_hset(_record_key(key_id), mapping):
             raise KeyNotFoundError(key_id)
         record.update(mapping)
+        if "models" in mapping and get_settings().share_models_by_provider:
+            await self._share_models(key_id, record["provider"], mapping["models"])
         state = await self.effective_state(key_id)
         updated = self._to_key_record(record, state)
         if "reset_at" in mapping or "reset_period_hours" in mapping:
             await carry_over(self.redis, previous, updated)
         return updated
+
+    async def _share_models(self, key_id: str, provider: str, models_json: str) -> None:
+        """Copy a saved model list to every other key of the same provider.
+
+        Only with ``share_models_by_provider``: the list edited on one key becomes
+        the list of all the provider's keys, so a removal reaches them too.
+        """
+        for other in await self.list():
+            if other.id == key_id or other.provider.value != provider:
+                continue
+            await self._conditional_hset(_record_key(other.id), {"models": models_json})
 
     async def suspend(self, key_id: str, operator_id: str | None = None) -> KeyRecord:
         """Exclude the key from selection at once. Idempotent.

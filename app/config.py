@@ -88,7 +88,8 @@ class Settings(BaseSettings):
 
     # Serve models per provider instead of per key: a key serves every model any
     # (non-suspended) key of its provider lists, so one key's model list applies
-    # to all the provider's keys. Stored per-key lists are never rewritten.
+    # to all the provider's keys. Saving a key's models also copies that list to
+    # the provider's other keys.
     share_models_by_provider: bool = False
 
     # Default pause after a transient provider failure, when the provider gives none.

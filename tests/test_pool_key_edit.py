@@ -102,3 +102,32 @@ async def test_unknown_key_404_and_auth_required(client, redis, headers):
 
     assert (await client.patch(f"{BASE}/nope", headers=headers, json={"models": ["a"]})).status_code == 404
     assert (await client.patch(f"{BASE}/{key_id}", json={"models": ["a"]})).status_code == 401
+
+
+@pytest.mark.asyncio
+async def test_saving_models_copies_them_to_the_providers_other_keys_when_sharing(
+    client, redis, headers, monkeypatch
+):
+    from app.config import get_settings
+
+    monkeypatch.setattr(get_settings(), "share_models_by_provider", True)
+    edited = await _key(redis, models=["a", "b"], key="sk-or-1")
+    sibling = await _key(redis, models=["a", "old"], key="sk-or-2")
+    other_provider = await _key(redis, provider=Provider.GROQ, models=["g"], key="gsk-3")
+
+    resp = await client.patch(f"{BASE}/{edited}", json={"models": ["a", "new"]}, headers=headers)
+
+    assert resp.status_code == 200
+    registry = PoolRegistry(redis)
+    assert (await registry.get(sibling)).models == ["a", "new"]
+    assert (await registry.get(other_provider)).models == ["g"]
+
+
+@pytest.mark.asyncio
+async def test_models_stay_per_key_when_not_sharing(client, redis, headers):
+    edited = await _key(redis, models=["a"], key="sk-or-1")
+    sibling = await _key(redis, models=["old"], key="sk-or-2")
+
+    await client.patch(f"{BASE}/{edited}", json={"models": ["new"]}, headers=headers)
+
+    assert (await PoolRegistry(redis).get(sibling)).models == ["old"]
