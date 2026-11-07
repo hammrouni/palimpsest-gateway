@@ -144,11 +144,14 @@ The bootstrap key is only seeded while no *active* operator key exists. It is a 
 | Variable | Default | Description |
 | :--- | :--- | :--- |
 | `PALIMPSEST_PROVIDER_API_KEY` | *(empty)* | Single-key shortcut. On startup it is added to the pool (encrypted, idempotently) for `PROVIDER_NAME` serving `PROVIDER_MODEL`. Add further keys through the pool API. |
-| `PALIMPSEST_PROVIDER_NAME` | `openai` | Provider of the env key: `openai`, `anthropic`, `google` or `openrouter`. An invalid value is logged and the key is not added. |
+| `PALIMPSEST_PROVIDER_NAME` | `openai` | Provider of the env key: `openai`, `anthropic`, `google`, `openrouter`, `mistral`, `groq` or `custom`. An invalid value is logged and the key is not added. |
 | `PALIMPSEST_PROVIDER_MODEL` | `gpt-4o-mini` | Model the env key serves. Clients must request this exact string. |
 | `PALIMPSEST_PROVIDER_TIMEOUT` | `60.0` | Timeout in seconds for each provider attempt. |
 | `PALIMPSEST_OPENROUTER_BASE_URL` | `https://openrouter.ai/api/v1` | Base URL for the OpenRouter adapter. |
 | `PALIMPSEST_OPENAI_BASE_URL` | *(none)* | Override for the OpenAI adapter base URL. |
+| `PALIMPSEST_MISTRAL_BASE_URL` | *(none)* | Override for the Mistral adapter base URL. |
+| `PALIMPSEST_GROQ_BASE_URL` | *(none)* | Override for the Groq adapter base URL. |
+| `PALIMPSEST_CUSTOM_BASE_URL` | *(none)* | Base URL of the `custom` provider, any OpenAI-compatible endpoint. Required to use it. |
 
 ### Store and HTTP
 
@@ -203,6 +206,9 @@ The settings marked *tunable* below can be changed without a restart, via `PATCH
 | `cooldown_seconds` | ≥ 1 |
 | `failover_event_log_size` | 1–1000000 |
 | `request_log_ttl_hours` | 1–8760 |
+| `share_models_by_provider` | boolean; see [Model sharing and master models](#model-sharing-and-master-models) |
+| `master_model` | a model some key serves, or `null` to turn it off |
+| `provider_master_models` | `{"<provider>": "<model>"}`, each model served by that provider's keys; a blank model removes that provider's master |
 
 Only these names are accepted. Credentials, the master key and the store URL are deliberately *not* runtime-tunable — a dashboard must never be a way to write a credential. An unrecognised key is rejected; a known key sent as `null` is refused, because assigning `null` onto a required setting would break arithmetic at request time.
 
@@ -250,7 +256,7 @@ curl -X POST http://localhost:8000/v1/operator/pool/keys \
       }'
 ```
 
-Supported providers are `openai`, `anthropic`, `google` and `openrouter`. Adding one is a deliberate code change in `app/pool/models.py`.
+Supported providers are `openai`, `anthropic`, `google`, `openrouter`, `mistral`, `groq` and `custom`. `custom` is any OpenAI-compatible endpoint and needs `PALIMPSEST_CUSTOM_BASE_URL`. Adding another provider is a deliberate code change in `app/pool/models.py`.
 
 ### Key states
 
@@ -260,6 +266,55 @@ Supported providers are `openai`, `anthropic`, `google` and `openrouter`. Adding
 | `cooldown` | Rested after a transient failure; returns to `active` when `COOLDOWN_SECONDS` elapses. |
 | `exhausted` | Out of quota or hard limit; stays out until its reset time or a manual resume. |
 | `suspended` | Set by an operator and stays out until resumed. |
+
+### Why a key or model is paused
+
+When a key or one of its models is held back, the gateway stores the cause with the pause. The dashboard shows it with the time the key returns, for example "daily limit reached, back in 7h 14m".
+
+| Reason | Meaning |
+| :--- | :--- |
+| `no_credits` | The account is out of money. Waiting does not help until it is topped up. |
+| `daily_limit` | A per-day quota was reached; the key returns at the provider's reset. |
+| `rate_limit` | A brief limit; the model rests for the provider's retry hint, or `COOLDOWN_SECONDS`. |
+| `model_unavailable` | The provider does not offer the model (404, or a model-scoped 403). The model is paused for 24 hours and the key keeps serving its other models. A 404 pauses the model on every key of that provider. |
+| `network` | The provider timed out. |
+| `provider_error` | A 5xx from the provider. |
+| `auth` | The key was refused; it is suspended until an operator resumes it. |
+
+A failure to reach the provider at all (DNS, connection refused) pauses nothing, because it says nothing about the key or the model. Models a key no longer serves never appear in the paused list.
+
+### Model sharing and master models
+
+Three runtime settings change which model serves a request. Change them on the dashboard **Configuration** page or with `PATCH /operator/v1/config`. All three apply from the next request.
+
+- **`share_models_by_provider`** (off by default). A key serves every model any non-suspended key of its provider lists. Saving the models of one key also copies that list to every other key of the same provider, so a removal reaches them all. With it off, each key serves only its own list.
+- **`master_model`**. One model for the whole gateway. Every chat request is served by it, whatever model the client asked for, including a model nobody serves. The response `model` field names the master model. Choose it from the dropdown; the API refuses a model no key serves.
+- **`provider_master_models`**. One model per provider. A request for any model a provider's keys serve is sent to that provider's master. A provider with no master keeps the requested model. If a model is served by more than one provider, the first provider with a master decides. A model no key serves is left alone, because no provider can be named for it.
+
+`master_model` wins over `provider_master_models`. `GET /v1/models` still lists every served model. If no key serves the chosen master, requests fail with `503 pool_exhausted`.
+
+```bash
+curl -X PATCH http://localhost:8000/operator/v1/config \
+  -H "Authorization: Bearer $OPERATOR_KEY" \
+  -H "Content-Type: application/json" \
+  -d '{"provider_master_models": {"openrouter": "nvidia/nemotron-3-ultra-550b-a55b:free"}}'
+```
+
+### Syncing a key's limits with OpenRouter
+
+The gateway counts only the requests it served, but OpenRouter counts every request on the account. For OpenRouter keys the gateway can ask OpenRouter (`GET /key`) and correct itself:
+
+```bash
+# report the difference only
+curl -X POST "http://localhost:8000/v1/operator/pool/sync-limits?apply=false" \
+  -H "Authorization: Bearer $OPERATOR_KEY"
+
+# correct every OpenRouter key; use /v1/operator/pool/keys/{key_id}/sync-limits for one
+curl -X POST http://localhost:8000/v1/operator/pool/sync-limits \
+  -H "Authorization: Bearer $OPERATOR_KEY"
+```
+
+It compares two numbers per key: `daily_cap` (OpenRouter's free-model request limit: 50 a day on a free account, 1000 with credits) and the used counter for the current window. Each key reports one status: `ok`, `updated` (local fixed), `drift` (report only), `error` (OpenRouter could not be asked; nothing changed) or `unsupported` (not an OpenRouter key). Every applied fix is audited. Other providers have no such endpoint, so they cannot be synced. The sync runs only when you call it.
 
 ### Quotas
 
@@ -448,8 +503,8 @@ The key is kept in `sessionStorage` for that tab only. **Sign out** (top right) 
 | Section | What it does | API it uses |
 |---|---|---|
 | **Overview** | Headline numbers for a period against the previous one: requests, errors, tokens, active users, pool state, derived cost, firing alerts. | `/operator/v1/overview` |
-| **Pool Keys** | List provider keys with label, state, request cap, token cap, next reset and last modifier. Filter, sort, add, edit, suspend, resume or remove. Browse a provider's model list when adding a key. Key material is never shown after creation. | `/v1/operator/pool/keys` |
-| **Utilization & Failover** | Per-key spend and remaining quota, the provider's rate-limit view of a key, and the recent failover log. | `/v1/operator/pool/utilization`, `/v1/operator/pool/failover-events` |
+| **Pool Keys** | List provider keys with label, state, request cap, token cap, next reset and last modifier. Filter, sort, add, edit, suspend, resume or remove. Browse a provider's model list when adding or editing a key; the models a key serves show as removable chips, with *Select shown*, *Unselect shown* and *Remove all*. Key material is never shown after creation. | `/v1/operator/pool/keys` |
+| **Utilization & Failover** | A strip showing whether the master model, the per-provider masters and model sharing are ON; per-key spend, remaining quota and why a key is paused; an *Unavailable models* list; the provider's rate-limit view of a key; and the recent failover log. | `/v1/operator/pool/utilization`, `/v1/operator/pool/failover-events` |
 | **Users** | List and manage accounts: disable, enable, delete, override a daily cap, see one user's trend, models and recent requests. | `/operator/v1/accounts` |
 | **Usage** | Tokens by account, provider and model. | `/operator/v1/usage` |
 | **Sessions** | A user's sessions, metadata only. | `/operator/v1/accounts/{id}/sessions` |
@@ -459,7 +514,7 @@ The key is kept in `sessionStorage` for that tab only. **Sign out** (top right) 
 | **Alerts** | Alerts firing now, thresholds and the webhook. | `/operator/v1/alerts*` |
 | **Audit & Export** | Operator actions, and CSV export of usage, requests and audit. | `/operator/v1/audit`, `/operator/v1/export/*` |
 | **System** | Version, uptime, Redis health and memory, retention settings. | `/operator/v1/system` |
-| **Configuration** | Edit runtime-tunable settings. Credentials and the master key are deliberately not editable. | `/operator/v1/config` |
+| **Configuration** | Edit runtime-tunable settings, including the master model and the per-provider master models, chosen from dropdowns of the models your keys serve. Credentials and the master key are deliberately not editable. | `/operator/v1/config` |
 
 Everything the dashboard does is also available through the Operator API, so it can be scripted with curl.
 
@@ -543,7 +598,9 @@ The gateway is stateless apart from Redis, so instances scale horizontally. Sess
 
 ### Upgrading
 
-`docker compose pull && docker compose up -d`.
+`docker compose pull && docker compose up -d`. If you build from source, use `docker compose up -d --build`, then hard-refresh the dashboard so the browser loads the new page.
+
+The running version is shown in the dashboard's **System** section and in `GET /operator/v1/system`. Read [CHANGELOG.md](../CHANGELOG.md) before upgrading: it lists what each release adds, changes and fixes.
 
 ## Troubleshooting
 

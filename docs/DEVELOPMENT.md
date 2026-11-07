@@ -178,6 +178,15 @@ Routes live in `app/api/`. Operator-realm routes require the operator dependency
 
 Operator analytics live in `app/api/operator_insights.py` and read from `app/usage/`, `app/alerts.py` and `app/audit.py`. They return metadata only: ids, counts, timings and operator-set prices, never message content or key material. Write operator actions through `audit(...)`, and keep the dashboard in `app/static/dashboard/` (`app.js`, `insights.js`) in step with the endpoint.
 
+### Release a version
+
+1. Move the entries under `## [Unreleased]` in [CHANGELOG.md](../CHANGELOG.md) into a new `## [x.y.z] - YYYY-MM-DD` section (Added, Changed, Fixed).
+2. Set the same number in `pyproject.toml` and `app/__init__.py` (`project_version` in `app/config.py` follows `__version__`), and in the `palimpsest-gateway` entry of `uv.lock`.
+3. Run the tests. `tests/test_version.py` fails if any copy disagrees with the changelog.
+4. Commit, then tag: `git tag v<x.y.z>`.
+
+Raise the minor number for a feature, the patch number for a fix and the major number for a breaking change.
+
 ### Add a provider
 
 A deliberate code change in `app/pool/models.py` — the `Provider` enum and its adapter in `app/provider/adapter.py`. It is not a config value.

@@ -6,7 +6,7 @@
 </picture>
 
 ### One OpenAI-compatible endpoint in front of all your LLM keys.
-Pool OpenAI, Anthropic, Gemini and OpenRouter keys. Fail over automatically. Keep every conversation going.
+Pool OpenAI, Anthropic, Gemini, OpenRouter, Mistral, Groq and custom OpenAI-compatible keys. Fail over automatically. Keep every conversation going.
 
 [![CI](https://github.com/hammrouni/palimpsest-gateway/actions/workflows/ci.yml/badge.svg)](https://github.com/hammrouni/palimpsest-gateway/actions/workflows/ci.yml)
 [![License: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
@@ -86,7 +86,11 @@ flowchart LR
 ## Features
 
 - **Drop-in OpenAI API**: `/v1/chat/completions` (streaming and non-streaming, tool calls), `/v1/models`.
-- **Multi-provider key pool**: OpenAI, Anthropic, Google Gemini and OpenRouter keys, each with optional request cap, token budget, reset schedule and a label.
+- **Multi-provider key pool**: OpenAI, Anthropic, Google Gemini, OpenRouter, Mistral, Groq and custom OpenAI-compatible keys, each with optional request cap, token budget, reset schedule and a label.
+- **Master models**: send every request to one chosen model for the whole gateway, or to one chosen model per provider, picked from the models your keys serve. Optionally let every key of a provider share one model list.
+- **Limit sync**: check an OpenRouter key against OpenRouter's own numbers and correct the local cap and used count.
+- **Clear pauses**: when a key or model is held back, the dashboard says why (out of credits, daily limit, rate limit, model not available) and when it returns.
+- **Versioned**: releases follow Semantic Versioning and are listed in [CHANGELOG.md](CHANGELOG.md).
 - **Automatic failover**: rate limits, outages, exhausted quotas and rejected keys are retried on the next key within a fixed retry budget. When nothing is left, the client gets a `503` with a retry hint.
 - **Conversation memory**: per-user session history, so clients send only the new message, and failover keeps the context.
 - **Fairness**: per-user daily request caps and a pool low-water mark that throttles before the pool runs dry.
@@ -104,7 +108,10 @@ flowchart LR
 | `openai` | OpenAI | `sk-...` | Requests routed as `openai/<model>`. |
 | `anthropic` | Anthropic | `sk-ant-...` | Requests routed as `anthropic/<model>`. |
 | `google` | Google Gemini | Gemini API key | Requests routed as `gemini/<model>`. |
-| `openrouter` | OpenRouter | `sk-or-...` | Requests routed as `openrouter/<model>`; the dashboard can show the provider's view of remaining free requests. |
+| `openrouter` | OpenRouter | `sk-or-...` | Requests routed as `openrouter/<model>`; the dashboard can show the provider's view of remaining free requests, and the limit sync can correct a key's cap and used count. |
+| `mistral` | Mistral | Mistral API key | Requests routed as `mistral/<model>`. Base URL override: `PALIMPSEST_MISTRAL_BASE_URL`. |
+| `groq` | Groq | `gsk_...` | Requests routed as `groq/<model>`. Base URL override: `PALIMPSEST_GROQ_BASE_URL`. |
+| `custom` | Any OpenAI-compatible endpoint | The endpoint's key | Needs `PALIMPSEST_CUSTOM_BASE_URL`. |
 
 
 ## Two ways in
@@ -298,7 +305,7 @@ Everything is configured through `PALIMPSEST_*` environment variables. The full 
 | `PALIMPSEST_GATE_OPERATOR_KEY` | generated | Bootstrap operator key, seeded idempotently on startup. |
 | `PALIMPSEST_LOG_OPERATOR_KEY` | `true` | Print the operator key and dashboard URL in the startup log. |
 | `PALIMPSEST_PROVIDER_API_KEY` | — | Single-key shortcut: added to the pool on startup. |
-| `PALIMPSEST_PROVIDER_NAME` | `openai` | Provider of that key: `openai`, `anthropic`, `google` or `openrouter`. |
+| `PALIMPSEST_PROVIDER_NAME` | `openai` | Provider of that key: `openai`, `anthropic`, `google`, `openrouter`, `mistral`, `groq` or `custom`. |
 | `PALIMPSEST_PROVIDER_MODEL` | `gpt-4o-mini` | Model that key serves; clients request this string. |
 | `PALIMPSEST_PROVIDER_TIMEOUT` | `60` | Seconds per provider attempt. |
 | `PALIMPSEST_ALLOW_SIGNUP` | `true` | Self-service `POST /v1/accounts`. Set `false` on any reachable gateway: then only an operator key can create accounts. |
@@ -351,6 +358,8 @@ Send `X-Session-ID` on every request in a conversation. Omit it and the gateway 
 | `/v1/operator/pool/keys/{key_id}/suspend` | `POST` | Suspend a key from selection. |
 | `/v1/operator/pool/keys/{key_id}/resume` | `POST` | Return a suspended key to selection. |
 | `/v1/operator/pool/keys/{key_id}/provider-limits` | `GET` | The provider's rate-limit view of a key. |
+| `/v1/operator/pool/keys/{key_id}/sync-limits` | `POST` | Check one OpenRouter key against OpenRouter and correct its local cap and used count. `?apply=false` only reports. |
+| `/v1/operator/pool/sync-limits` | `POST` | The same check for every OpenRouter key. |
 | `/v1/operator/pool/keys/{key_id}/available-models` | `GET` | Models the key's provider offers. |
 | `/v1/operator/pool/available-models` | `POST` | Models a provider offers, for a key not yet in the pool. |
 | `/v1/operator/pool/utilization` | `GET` | Per-key spend and remaining quota. |
