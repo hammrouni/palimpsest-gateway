@@ -1525,14 +1525,33 @@ h4 {
   flex-wrap: wrap;
 }
 
-/* Which routing options are on. */
+/* Which routing options are on: three equal cards. */
 .option-strip {
-  display: flex;
-  flex-direction: column;
-  gap: 0.4rem;
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(240px, 1fr));
+  gap: 0.75rem;
   margin-bottom: 1rem;
 }
-.option-strip .cell-line {
-  flex-wrap: wrap;
+.option-card {
+  border: 1px solid var(--border, rgba(127, 127, 127, 0.3));
+  border-radius: 8px;
+  padding: 0.65rem 0.85rem;
+  display: flex;
+  flex-direction: column;
+  gap: 0.35rem;
+  min-width: 0;
+}
+.option-card--on {
+  border-color: rgba(46, 160, 90, 0.55);
+}
+.option-card__head {
+  display: flex;
   align-items: center;
+  justify-content: space-between;
+  gap: 0.5rem;
+}
+.option-card__detail {
+  font-size: 0.88em;
+  opacity: 0.75;
+  overflow-wrap: anywhere;
 }

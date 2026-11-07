@@ -2301,23 +2301,24 @@ function drawActiveOptions() {
     health.options.replaceChildren();
     return;
   }
-  const row = (label, on, detail) => {
-    const line = el('div', 'cell-line');
-    line.append(el('span', 'badge badge--' + (on ? 'active' : 'suspended'), on ? 'ON' : 'OFF'), el('strong', null, label));
-    if (detail) {
-      line.append(el('span', 'note', detail));
-    }
-    return line;
+  const card = (label, on, detail) => {
+    const node = el('div', 'option-card' + (on ? ' option-card--on' : ''));
+    const head = el('div', 'option-card__head');
+    head.append(el('strong', null, label), el('span', 'badge badge--' + (on ? 'active' : 'suspended'), on ? 'ON' : 'OFF'));
+    node.append(head, el('div', 'option-card__detail', detail));
+    return node;
   };
   const masters = Object.entries(config.provider_master_models || {});
   health.options.replaceChildren(
-    row('Master model (all requests)', Boolean(config.master_model),
-      config.master_model ? 'every request is served by ' + config.master_model : 'clients get the model they ask for'),
-    row('Master model per provider', masters.length > 0,
-      masters.length ? masters.map(([provider, model]) => provider + ' → ' + model).join(' · ')
-        + (config.master_model ? ' (overridden by the gateway-wide master)' : '') : 'not set'),
-    row('Share models by provider', config.share_models_by_provider === true,
-      config.share_models_by_provider ? 'every key serves the combined model list of its provider' : 'each key serves its own list')
+    card('Master model', Boolean(config.master_model),
+      config.master_model ? 'All requests go to ' + config.master_model : 'Clients get the model they ask for'),
+    card('Master per provider', masters.length > 0,
+      masters.length
+        ? masters.map(([provider, model]) => provider + ' → ' + model).join(' · ')
+          + (config.master_model ? ' (overridden by the master model)' : '')
+        : 'Not set'),
+    card('Share models by provider', config.share_models_by_provider === true,
+      config.share_models_by_provider ? 'Each key serves its provider’s combined model list' : 'Each key serves its own list')
   );
 }
 
