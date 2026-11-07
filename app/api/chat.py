@@ -786,6 +786,11 @@ async def chat_completions(
     """
     # A valid client X-Request-ID is echoed but never used as the settlement
     # idempotency key, so a reused ID cannot look like a duplicate settlement.
+    master_model = get_settings().master_model
+    if master_model and request.model != master_model:
+        # Master model on: every request is served by it, whatever the client asked.
+        request = request.model_copy(update={"model": master_model})
+
     request_id = (
         x_request_id
         if x_request_id and _CLIENT_REQUEST_ID.fullmatch(x_request_id)

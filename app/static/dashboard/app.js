@@ -41,6 +41,8 @@ const CONFIG_FIELDS = [
     hint: 'How long request logs are retained.' },
   { name: 'share_models_by_provider', label: 'Share models by provider', type: 'checkbox',
     hint: 'A key serves every model any key of its provider lists, and saving the models of one key copies that list to every key of the provider.' },
+  { name: 'master_model', label: 'Master model', type: 'text',
+    hint: 'When set, every request is served by this model, whatever model the client asks for. Blank turns it off.' },
 ];
 
 const NUMBER_FORMAT = new Intl.NumberFormat();
@@ -3482,7 +3484,7 @@ function readConfigForm(form, baseline = {}) {
       value = control.checked;
     } else if (control.value.trim() !== '') {
       value = field.type === 'number' ? Number(control.value) : control.value.trim();
-    } else if (field.name === 'user_daily_cap') {
+    } else if (field.name === 'user_daily_cap' || field.name === 'master_model') {
       /* Blank is the documented way to clear an optional cap; the other
          numerics are required and the server refuses an empty one. */
       value = null;

@@ -14,6 +14,7 @@ from pydantic import (
     ConfigDict,
     Field,
     ValidationError,
+    field_validator,
     model_validator,
 )
 from pydantic_settings import BaseSettings
@@ -30,7 +31,12 @@ TUNABLE_FIELDS: tuple[str, ...] = (
     "failover_event_log_size",
     "request_log_ttl_hours",
     "share_models_by_provider",
+    "master_model",
 )
+
+
+# Tunables where null means "off" rather than "invalid".
+_NULLABLE_TUNABLES = frozenset({"user_daily_cap", "master_model"})
 
 
 class Settings(BaseSettings):
@@ -91,6 +97,10 @@ class Settings(BaseSettings):
     # to all the provider's keys. Saving a key's models also copies that list to
     # the provider's other keys.
     share_models_by_provider: bool = False
+
+    # When set, every chat request is served by this model, whatever model the
+    # client asked for. Empty means each request gets the model it names.
+    master_model: str | None = None
 
     # Default pause after a transient provider failure, when the provider gives none.
     cooldown_seconds: int = Field(default=60, ge=1)
@@ -205,11 +215,17 @@ class ConfigPatch(BaseModel):
     failover_event_log_size: int | None = Field(default=None, ge=1, le=1_000_000)
     request_log_ttl_hours: int | None = Field(default=None, ge=1, le=8760)
     share_models_by_provider: bool | None = None
+    master_model: str | None = Field(default=None, max_length=200)
+
+    @field_validator("master_model")
+    @classmethod
+    def _blank_master_model_clears_it(cls, value: str | None) -> str | None:
+        return (value.strip() or None) if value is not None else None
 
     @model_validator(mode="after")
     def _null_only_clears_the_user_cap(self) -> ConfigPatch:
-        """``null`` clears ``user_daily_cap``; every other setting requires a value."""
+        """``null`` clears ``user_daily_cap`` or ``master_model``; the rest need a value."""
         for field in self.model_fields_set:
-            if field in TUNABLE_FIELDS and field != "user_daily_cap" and getattr(self, field) is None:
+            if field in TUNABLE_FIELDS and field not in _NULLABLE_TUNABLES and getattr(self, field) is None:
                 raise ValueError(f"{field} cannot be null")
         return self

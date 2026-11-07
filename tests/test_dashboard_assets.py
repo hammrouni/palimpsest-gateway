@@ -110,7 +110,7 @@ const make = (vals) => ({
 });
 const baseline = { verbatim_turns_n: 4, retry_budget: 3, pool_low_water_mark: 0,
   user_daily_cap: 50, request_log_prompts: false, cooldown_seconds: 60,
-  failover_event_log_size: 1000, request_log_ttl_hours: 24, share_models_by_provider: false };
+  failover_event_log_size: 1000, request_log_ttl_hours: 24, share_models_by_provider: false, master_model: "big" };
 const same = { ...baseline };
 const out = {
   untouched: readConfigForm(make(same), baseline),
