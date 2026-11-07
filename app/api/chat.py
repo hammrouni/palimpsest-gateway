@@ -44,6 +44,7 @@ from app.pool.tokens import add_tokens
 from app.provider.adapter import AttemptResult
 from app.router.exhaustion import PoolExhaustedError, render_exhausted, render_fatal
 from app.router.failover import FailoverTrace, execute_with_failover
+from app.router.master import effective_model
 from app.router.rebuild import identity_rebuild
 from app.schemas.chat import (
     ChatCompletionRequest,
@@ -786,10 +787,10 @@ async def chat_completions(
     """
     # A valid client X-Request-ID is echoed but never used as the settlement
     # idempotency key, so a reused ID cannot look like a duplicate settlement.
-    master_model = get_settings().master_model
-    if master_model and request.model != master_model:
-        # Master model on: every request is served by it, whatever the client asked.
-        request = request.model_copy(update={"model": master_model})
+    served_model = await effective_model(PoolRegistry(store.redis), request.model)
+    if served_model != request.model:
+        # A master model is on: it serves the request, whatever the client asked.
+        request = request.model_copy(update={"model": served_model})
 
     request_id = (
         x_request_id

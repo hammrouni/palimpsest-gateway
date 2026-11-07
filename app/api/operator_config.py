@@ -18,10 +18,38 @@ from app.config import (
     tunable_values,
 )
 from app.errors import GatewayError
+from app.pool.models import KeyState
+from app.pool.registry import PoolRegistry
 from app.store.config import ConfigStore
 from app.store.redis_store import RedisStore
 
 router = APIRouter(prefix="/operator/v1/config", tags=["operator"])
+
+
+def _not_served(param: str, model: str, where: str) -> GatewayError:
+    return GatewayError(
+        message=f"No key serves {model!r} {where}; pick a model from the list.",
+        status_code=422,
+        error_type="invalid_request_error",
+        code="master_model_not_served",
+        param=param,
+    )
+
+
+async def _check_masters_are_served(request: Request, changes: dict[str, Any]) -> None:
+    """A master model must be one the pool's keys serve, so the choice is a real one."""
+    master = changes.get("master_model")
+    per_provider = changes.get("provider_master_models") or {}
+    if not master and not per_provider:
+        return
+    registry = PoolRegistry(request.app.state.store.redis)
+    records = [r for r in await registry.list() if r.state != KeyState.SUSPENDED]
+    serving = registry.serving_models(records)
+    if master and not any(master in serving[r.id] for r in records):
+        raise _not_served("master_model", master, "in the pool")
+    for provider, model in per_provider.items():
+        if not any(r.provider.value == provider and model in serving[r.id] for r in records):
+            raise _not_served("provider_master_models", model, f"for {provider}")
 
 
 def _config_store(request: Request) -> ConfigStore:
@@ -70,6 +98,7 @@ async def update_config(
         )
 
     changes = {key: value for key, value in supplied.items() if key in TUNABLE_FIELDS}
+    await _check_masters_are_served(request, changes)
     if changes:
         # Audit "old" is what was actually in effect (env default or earlier
         # override), not just what happens to be in the overrides hash.

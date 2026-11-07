@@ -32,6 +32,7 @@ TUNABLE_FIELDS: tuple[str, ...] = (
     "request_log_ttl_hours",
     "share_models_by_provider",
     "master_model",
+    "provider_master_models",
 )
 
 
@@ -101,6 +102,10 @@ class Settings(BaseSettings):
     # When set, every chat request is served by this model, whatever model the
     # client asked for. Empty means each request gets the model it names.
     master_model: str | None = None
+
+    # One master model per provider ({"openrouter": "model-id"}): a request for any
+    # model a provider serves goes to that provider's master. ``master_model`` wins.
+    provider_master_models: dict[str, str] = Field(default_factory=dict)
 
     # Default pause after a transient provider failure, when the provider gives none.
     cooldown_seconds: int = Field(default=60, ge=1)
@@ -216,6 +221,23 @@ class ConfigPatch(BaseModel):
     request_log_ttl_hours: int | None = Field(default=None, ge=1, le=8760)
     share_models_by_provider: bool | None = None
     master_model: str | None = Field(default=None, max_length=200)
+
+    provider_master_models: dict[str, str] | None = None
+
+    @field_validator("provider_master_models")
+    @classmethod
+    def _clean_provider_masters(cls, value: dict[str, str] | None) -> dict[str, str] | None:
+        """Known providers only; a blank model drops that provider's master."""
+        if value is None:
+            return None
+        from app.pool.models import Provider
+
+        known = {p.value for p in Provider}
+        unknown = sorted(set(value) - known)
+        if unknown:
+            raise ValueError(f"unknown provider: {', '.join(unknown)}")
+        cleaned = {name: model.strip() for name, model in value.items()}
+        return {name: model for name, model in cleaned.items() if model}
 
     @field_validator("master_model")
     @classmethod

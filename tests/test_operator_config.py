@@ -36,6 +36,7 @@ _TUNABLE_FIELDS = _CORE_TUNABLES | {
     "request_log_ttl_hours",
     "share_models_by_provider",
     "master_model",
+    "provider_master_models",
 }
 
 # Credentials and infrastructure that must never cross this boundary.

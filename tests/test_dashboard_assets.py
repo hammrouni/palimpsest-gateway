@@ -101,16 +101,18 @@ def test_read_config_form_sends_only_changed_fields_and_keeps_text_as_text():
     fields = js[js.index("const CONFIG_FIELDS = [") : js.index("\n];", js.index("const CONFIG_FIELDS")) + 3]
     start = js.index("function readConfigForm(")
     reader = js[start : js.index("\n}\n", start) + 3]
-    script = fields + reader + """
+    helper_start = js.index("function sortedMap(")
+    helper = js[helper_start : js.index("\n}\n", helper_start) + 3]
+    script = fields + helper + reader + """
 const make = (vals) => ({
   elements: { namedItem: (name) => {
     const v = vals[name];
-    return typeof v === 'boolean' ? { checked: v, value: '' } : { checked: false, value: v === undefined ? '' : String(v) };
+    return typeof v === 'boolean' ? { checked: v, value: '' } : { checked: false, value: v === undefined ? '' : (typeof v === 'object' && v !== null ? JSON.stringify(v) : String(v)) };
   } },
 });
 const baseline = { verbatim_turns_n: 4, retry_budget: 3, pool_low_water_mark: 0,
   user_daily_cap: 50, request_log_prompts: false, cooldown_seconds: 60,
-  failover_event_log_size: 1000, request_log_ttl_hours: 24, share_models_by_provider: false, master_model: "big" };
+  failover_event_log_size: 1000, request_log_ttl_hours: 24, share_models_by_provider: false, master_model: "big", provider_master_models: { groq: "g1" } };
 const same = { ...baseline };
 const out = {
   untouched: readConfigForm(make(same), baseline),
@@ -118,6 +120,8 @@ const out = {
   noCapStaysNoCap: readConfigForm(make({ ...same, user_daily_cap: '' }), { ...baseline, user_daily_cap: null }),
   toggle: readConfigForm(make({ ...same, request_log_prompts: true }), baseline),
   number: readConfigForm(make({ ...same, retry_budget: '5' }), baseline),
+  mapSame: readConfigForm(make({ ...same, provider_master_models: '{"groq":"g1"}' }), baseline),
+  mapChanged: readConfigForm(make({ ...same, provider_master_models: '{"groq":"g2","openai":""}' }), baseline),
 };
 console.log(JSON.stringify(out));
 """
@@ -129,6 +133,8 @@ console.log(JSON.stringify(out));
     assert out["noCapStaysNoCap"] == {}
     assert out["toggle"] == {"request_log_prompts": True}
     assert out["number"] == {"retry_budget": 5}
+    assert out["mapSame"] == {}
+    assert out["mapChanged"] == {"provider_master_models": {"groq": "g2"}}
 
 
 def test_js_passes_a_syntax_check():

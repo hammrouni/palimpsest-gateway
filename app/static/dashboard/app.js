@@ -41,8 +41,10 @@ const CONFIG_FIELDS = [
     hint: 'How long request logs are retained.' },
   { name: 'share_models_by_provider', label: 'Share models by provider', type: 'checkbox',
     hint: 'A key serves every model any key of its provider lists, and saving the models of one key copies that list to every key of the provider.' },
-  { name: 'master_model', label: 'Master model', type: 'text',
-    hint: 'When set, every request is served by this model, whatever model the client asks for. Blank turns it off.' },
+  { name: 'master_model', label: 'Master model (whole gateway)', type: 'select',
+    hint: 'When set, every request is served by this model, whatever model the client asks for. It wins over the per-provider masters.' },
+  { name: 'provider_master_models', label: 'Master model per provider', type: 'provider-map',
+    hint: 'A request for any model a provider serves goes to the master chosen for that provider. Providers left unset keep the requested model.' },
 ];
 
 const NUMBER_FORMAT = new Intl.NumberFormat();
@@ -3442,12 +3444,28 @@ function renderRequests(view) {
 
 const configuration = {
   values: {},
+  records: [],
+  providerBox: null,
   panel: null,
   form: null,
   save: null,
 };
 
 function configControl(field) {
+  if (field.type === 'select') {
+    const select = el('select');
+    select.name = field.name;
+    select.id = 'config-' + field.name;
+    return select;
+  }
+  if (field.type === 'provider-map') {
+    /* Holds the {provider: model} map as JSON; the per-provider selects write to it. */
+    const hidden = el('input');
+    hidden.type = 'hidden';
+    hidden.name = field.name;
+    hidden.id = 'config-' + field.name;
+    return hidden;
+  }
   if (field.type === 'checkbox') {
     const box = el('input');
     box.type = 'checkbox';
@@ -3472,6 +3490,16 @@ function configControl(field) {
   return input;
 }
 
+function sortedMap(map) {
+  const out = {};
+  for (const key of Object.keys(map).sort()) {
+    if (map[key]) {
+      out[key] = map[key];
+    }
+  }
+  return out;
+}
+
 /* Only fields that differ from the last server state are sent: an untouched
    field would otherwise become a persisted override pinning today's value, and
    would overwrite a change another operator made since this form loaded. */
@@ -3480,7 +3508,17 @@ function readConfigForm(form, baseline = {}) {
   for (const field of CONFIG_FIELDS) {
     const control = form.elements.namedItem(field.name);
     let value;
-    if (field.type === 'checkbox') {
+    if (field.type === 'provider-map') {
+      if (control.value.trim() === '') {
+        continue;
+      }
+      value = sortedMap(JSON.parse(control.value));
+      const was = sortedMap(baseline[field.name] || {});
+      if (JSON.stringify(value) !== JSON.stringify(was)) {
+        patch[field.name] = value;
+      }
+      continue;
+    } else if (field.type === 'checkbox') {
       value = control.checked;
     } else if (control.value.trim() !== '') {
       value = field.type === 'number' ? Number(control.value) : control.value.trim();
@@ -3499,11 +3537,92 @@ function readConfigForm(form, baseline = {}) {
   return patch;
 }
 
+/* Models the pool serves, from the key list: every served model, and per provider.
+   A master is picked from these, never typed. */
+function masterOptions() {
+  const all = new Set();
+  const byProvider = {};
+  for (const record of configuration.records || []) {
+    if (record.state === 'suspended') {
+      continue;
+    }
+    const set = byProvider[record.provider] || (byProvider[record.provider] = new Set());
+    for (const model of record.models || []) {
+      all.add(model);
+      set.add(model);
+    }
+  }
+  const sorted = (set) => [...set].sort((a, b) => a.localeCompare(b));
+  return {
+    all: sorted(all),
+    byProvider: Object.fromEntries(Object.entries(byProvider).map(([p, set]) => [p, sorted(set)])),
+  };
+}
+
+function fillSelect(select, models, current, blankLabel) {
+  const options = [new Option(blankLabel, '')];
+  const known = new Set(models);
+  if (current && !known.has(current)) {
+    options.push(new Option(current + ' (no key serves it)', current));
+  }
+  for (const model of models) {
+    options.push(new Option(model, model));
+  }
+  select.replaceChildren(...options);
+  select.value = current || '';
+}
+
+function drawMasterSelect(select, current) {
+  fillSelect(select, masterOptions().all, current, 'Off: use the requested model');
+}
+
+function drawProviderMasters(form) {
+  const hidden = form.elements.namedItem('provider_master_models');
+  const box = configuration.providerBox;
+  if (!hidden || !box) {
+    return;
+  }
+  let current = {};
+  try {
+    current = JSON.parse(hidden.value || '{}');
+  } catch (err) {
+    current = {};
+  }
+  const options = masterOptions().byProvider;
+  const providers = [...new Set([...Object.keys(options), ...Object.keys(current)])].sort();
+  if (!providers.length) {
+    box.replaceChildren(el('p', 'note', 'No keys in the pool yet.'));
+    return;
+  }
+  box.replaceChildren(
+    ...providers.map((provider) => {
+      const select = el('select');
+      select.id = 'config-master-' + provider;
+      fillSelect(select, options[provider] || [], current[provider], 'Not set');
+      select.addEventListener('change', () => {
+        const next = JSON.parse(hidden.value || '{}');
+        if (select.value) {
+          next[provider] = select.value;
+        } else {
+          delete next[provider];
+        }
+        hidden.value = JSON.stringify(sortedMap(next));
+      });
+      return labelled(provider, select);
+    })
+  );
+}
+
 function fillConfigForm(form, values) {
   for (const field of CONFIG_FIELDS) {
     const control = form.elements[field.name];
     const value = values[field.name];
-    if (field.type === 'checkbox') {
+    if (field.type === 'provider-map') {
+      control.value = JSON.stringify(sortedMap(value || {}));
+      drawProviderMasters(form);
+    } else if (field.type === 'select') {
+      drawMasterSelect(control, value);
+    } else if (field.type === 'checkbox') {
       control.checked = value === true;
     } else {
       control.value = value === null || value === undefined ? '' : String(value);
@@ -3526,6 +3645,14 @@ function buildConfigForm(save) {
 
   const grid = el('div', 'form-grid');
   for (const field of CONFIG_FIELDS) {
+    if (field.type === 'provider-map') {
+      const group = el('div', 'field master-map');
+      configuration.providerBox = el('div', 'form-grid');
+      group.append(el('span', null, field.label), configControl(field), configuration.providerBox);
+      group.append(el('span', 'field-hint', field.hint));
+      grid.append(group);
+      continue;
+    }
     const wrapper = labelled(field.label, configControl(field));
     wrapper.append(el('span', 'field-hint', field.hint));
     grid.append(wrapper);
@@ -3586,6 +3713,14 @@ async function loadConfiguration() {
   configuration.panel.report('Loading configuration…', 'pending');
   try {
     configuration.values = await apiFetch(CONFIG_PATH);
+    try {
+      configuration.records = await apiFetch(POOL_KEYS_PATH);
+    } catch (err) {
+      if (err instanceof SignedOut) {
+        throw err;
+      }
+      configuration.records = [];
+    }
     fillConfigForm(configuration.form, configuration.values);
     configuration.panel.report('Changes apply from the next request.', 'ok');
   } catch (err) {
