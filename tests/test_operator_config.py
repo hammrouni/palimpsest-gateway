@@ -34,6 +34,7 @@ _CORE_TUNABLES = {
 _TUNABLE_FIELDS = _CORE_TUNABLES | {
     "failover_event_log_size",
     "request_log_ttl_hours",
+    "share_models_by_provider",
 }
 
 # Credentials and infrastructure that must never cross this boundary.

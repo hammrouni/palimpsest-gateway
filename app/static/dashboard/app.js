@@ -39,6 +39,8 @@ const CONFIG_FIELDS = [
     hint: 'Events retained in the bounded mirror list.' },
   { name: 'request_log_ttl_hours', label: 'Request log TTL (h)', type: 'number', min: 1, step: 1,
     hint: 'How long request logs are retained.' },
+  { name: 'share_models_by_provider', label: 'Share models by provider', type: 'checkbox',
+    hint: 'A key serves every model any key of its provider lists. Stored per-key lists are unchanged.' },
 ];
 
 const NUMBER_FORMAT = new Intl.NumberFormat();

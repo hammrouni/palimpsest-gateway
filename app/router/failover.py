@@ -123,7 +123,8 @@ async def _earliest_next_reset(registry: PoolRegistry, model: str) -> datetime |
 
     all_keys = await registry.list()
     now = datetime.now(UTC)
-    resets = [record.next_reset_at(now) for record in all_keys if model in record.models]
+    serving = registry.serving_models(all_keys)
+    resets = [record.next_reset_at(now) for record in all_keys if model in serving[record.id]]
     return min(resets) if resets else None
 
 

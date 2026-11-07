@@ -136,3 +136,38 @@ def test_long_waits_keep_the_quota_reset_wording():
     assert int(far_msg.headers["Retry-After"]) > 3600
     assert "Retry in about" in near_msg.message
     assert render_exhausted(PoolExhaustedError("pool_exhausted", None), "m").headers.get("Retry-After") is None
+
+
+@pytest.mark.asyncio
+async def test_share_models_by_provider_lets_every_key_serve_the_union(registry, monkeypatch):
+    from app.config import get_settings
+
+    first = await _key(registry, ["a"], "sk-a")
+    second = await _key(registry, ["b"], "sk-b")
+
+    assert [k.id for k in await registry.routable_keys(model="a")] == [first]
+
+    monkeypatch.setattr(get_settings(), "share_models_by_provider", True)
+
+    assert {k.id for k in await registry.routable_keys(model="a")} == {first, second}
+    assert {k.id for k in await registry.routable_keys(model="b")} == {first, second}
+    # stored per-key lists are untouched
+    assert {r.id: r.models for r in await registry.list()} == {first: ["a"], second: ["b"]}
+
+
+@pytest.mark.asyncio
+async def test_share_models_ignores_other_providers_and_suspended_keys(registry, monkeypatch):
+    from app.config import get_settings
+
+    monkeypatch.setattr(get_settings(), "share_models_by_provider", True)
+    a = await _key(registry, ["a"], "sk-a")
+    other = (await registry.create(KeyCreate(provider=Provider.GROQ, models=["g"], key="sk-g"))).id
+    gone = await _key(registry, ["secret"], "sk-s")
+    await registry.suspend(gone, operator_id="op")
+
+    assert await registry.routable_keys(model="g") == [
+        k for k in await registry.routable_keys(model="g") if k.id == other
+    ]
+    assert [k.id for k in await registry.routable_keys(model="g")] == [other]
+    assert {k.id for k in await registry.routable_keys(model="secret")} == set()
+    assert a in {k.id for k in await registry.routable_keys(model="a")}

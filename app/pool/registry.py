@@ -319,16 +319,32 @@ class PoolRegistry:
 
     # -- Reads used by selection, failover and operator views ---------------
 
+    def serving_models(self, records: list[KeyRecord]) -> dict[str, frozenset[str]]:
+        """Models each key may serve right now, by key id.
+
+        Per key by default. With ``share_models_by_provider`` a key serves the
+        union of its provider's non-suspended keys, so one key's list covers
+        them all. The stored ``record.models`` are never changed.
+        """
+        if not get_settings().share_models_by_provider:
+            return {r.id: frozenset(r.models) for r in records}
+        union: dict[Provider, set[str]] = {}
+        for r in records:
+            if r.state != KeyState.SUSPENDED:
+                union.setdefault(r.provider, set()).update(r.models)
+        return {r.id: frozenset(union.get(r.provider, ()) | set(r.models)) for r in records}
+
     async def routable_keys(self, model: str | None = None) -> list[KeyRecord]:
         """Active keys, optionally only those serving ``model``.
 
         With a ``model``, keys cooling down for that model are left out.
         """
         keys = await self.list()
+        serving = self.serving_models(keys)
         candidates = [
             k
             for k in keys
-            if k.state == KeyState.ACTIVE and (model is None or model in k.models)
+            if k.state == KeyState.ACTIVE and (model is None or model in serving[k.id])
         ]
         if model is None or not candidates:
             return candidates
@@ -346,8 +362,10 @@ class PoolRegistry:
         """
         now = datetime.now(UTC)
         best: datetime | None = None
-        for record in await self.list():
-            if model not in record.models or record.state == KeyState.SUSPENDED:
+        records = await self.list()
+        serving = self.serving_models(records)
+        for record in records:
+            if model not in serving[record.id] or record.state == KeyState.SUSPENDED:
                 continue
             marker = (
                 _state_key(record.id)

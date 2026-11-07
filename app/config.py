@@ -29,6 +29,7 @@ TUNABLE_FIELDS: tuple[str, ...] = (
     "cooldown_seconds",
     "failover_event_log_size",
     "request_log_ttl_hours",
+    "share_models_by_provider",
 )
 
 
@@ -84,6 +85,11 @@ class Settings(BaseSettings):
 
     # Log the current turn's messages. Stored history is never logged.
     request_log_prompts: bool = False
+
+    # Serve models per provider instead of per key: a key serves every model any
+    # (non-suspended) key of its provider lists, so one key's model list applies
+    # to all the provider's keys. Stored per-key lists are never rewritten.
+    share_models_by_provider: bool = False
 
     # Default pause after a transient provider failure, when the provider gives none.
     cooldown_seconds: int = Field(default=60, ge=1)
@@ -197,6 +203,7 @@ class ConfigPatch(BaseModel):
     cooldown_seconds: int | None = Field(default=None, ge=1)
     failover_event_log_size: int | None = Field(default=None, ge=1, le=1_000_000)
     request_log_ttl_hours: int | None = Field(default=None, ge=1, le=8760)
+    share_models_by_provider: bool | None = None
 
     @model_validator(mode="after")
     def _null_only_clears_the_user_cap(self) -> ConfigPatch:

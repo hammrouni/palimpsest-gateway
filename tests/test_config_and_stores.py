@@ -43,6 +43,7 @@ async def operator_headers(fake_redis: FakeRedis) -> dict[str, str]:
         "request_log_prompts",
         "cooldown_seconds",
         "failover_event_log_size",
+        "share_models_by_provider",
     ],
 )
 def test_null_is_rejected_for_every_required_tunable(field):

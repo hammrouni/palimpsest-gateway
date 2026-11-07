@@ -23,11 +23,14 @@ _OWNER = "palimpsest"
 async def _served_models(store: RedisStore) -> list[dict]:
     """One OpenAI model object per distinct model string, sorted by id."""
     created: dict[str, int] = {}
-    for record in await PoolRegistry(store.redis).list():
+    registry = PoolRegistry(store.redis)
+    records = await registry.list()
+    serving = registry.serving_models(records)
+    for record in records:
         if record.state == KeyState.SUSPENDED:
             continue
         stamp = int(record.created_at.timestamp())
-        for model in record.models:
+        for model in serving[record.id]:
             created[model] = min(stamp, created.get(model, stamp))
     return [
         {"id": model, "object": "model", "created": created[model], "owned_by": _OWNER}
