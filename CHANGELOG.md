@@ -12,7 +12,7 @@ drift. The running version is shown in the dashboard's **System** section and in
 
 ## [Unreleased]
 
-## [2.2.0] - 2026-11-07
+## [1.1.0] - 2026-11-07
 
 ### Added
 - **Providers:** Mistral, Groq and a `custom` OpenAI-compatible provider, with
@@ -60,7 +60,7 @@ drift. The running version is shown in the dashboard's **System** section and in
 - asyncio's repeated `socket.send() raised exception` warning is limited to one
   log line a minute.
 
-## [2.1.0] - 2026-10-10
+## [1.0.0] - 2026-10-10
 
 ### Added
 - First public release: OpenAI-compatible `/v1/chat/completions` and
@@ -68,6 +68,6 @@ drift. The running version is shown in the dashboard's **System** section and in
   with failover, per-key and per-user caps, session history, an operator API and
   dashboard.
 
-[Unreleased]: https://github.com/hammrouni/palimpsest-gateway/compare/v2.2.0...HEAD
-[2.2.0]: https://github.com/hammrouni/palimpsest-gateway/compare/v2.1.0...v2.2.0
-[2.1.0]: https://github.com/hammrouni/palimpsest-gateway/releases/tag/v2.1.0
+[Unreleased]: https://github.com/hammrouni/palimpsest-gateway/compare/v1.1.0...HEAD
+[1.1.0]: https://github.com/hammrouni/palimpsest-gateway/compare/v1.0.0...v1.1.0
+[1.0.0]: https://github.com/hammrouni/palimpsest-gateway/releases/tag/v1.0.0
