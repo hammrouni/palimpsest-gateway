@@ -18,6 +18,7 @@ from app.config import get_settings
 from app.errors import GatewayError
 from app.pool.catalog import CatalogError, fetch_models, key_catalog
 from app.pool.events import recent_failover_events
+from app.pool.limit_sync import sync_all, sync_key
 from app.pool.limits import LiveLimitsError, get_observed, live_limits
 from app.pool.models import KeyCreate, KeyUpdate, Provider
 from app.pool.registry import DuplicateKeyError, KeyNotFoundError, PoolRegistry
@@ -260,6 +261,37 @@ async def get_provider_limits(
     }
 
 
+@router.post("/{key_id}/sync-limits", responses=_ERROR_RESPONSES)
+async def sync_key_limits(
+    key_id: Annotated[str, Path()],
+    registry: Annotated[PoolRegistry, Depends(get_pool_registry)],
+    operator: Annotated[dict, Depends(get_current_operator)],
+    apply: bool = True,
+) -> dict:
+    """Check this key against its provider and correct the local cap and used count.
+
+    ``apply=false`` only reports the drift. OpenRouter keys only; other providers
+    answer ``status: unsupported``. Numbers only: never key material.
+    """
+    try:
+        result = await _pool_call(
+            sync_key,
+            registry,
+            key_id,
+            get_settings().openrouter_base_url,
+            apply=apply,
+            operator_id=operator["id"],
+        )
+    except KeyNotFoundError as exc:
+        raise _key_not_found() from exc
+    if result["applied"]:
+        await audit(
+            registry.redis, operator["id"], "pool_key.sync_limits", key_id,
+            {"changes": result["changes"]},
+        )
+    return result
+
+
 @router.get("/{key_id}/available-models", responses=_ERROR_RESPONSES)
 async def get_available_models(
     key_id: Annotated[str, Path()],
@@ -324,6 +356,36 @@ async def post_available_models(
     except CatalogError as exc:
         raise _catalog_error(exc) from exc
     return {"object": "list", "data": models}
+
+
+@ops_router.post("/sync-limits")
+async def sync_pool_limits(
+    registry: Annotated[PoolRegistry, Depends(get_pool_registry)],
+    operator: Annotated[dict, Depends(get_current_operator)],
+    apply: bool = True,
+) -> dict:
+    """Run the limit check on every OpenRouter key; ``apply=false`` only reports."""
+    results = await _pool_call(
+        sync_all,
+        registry,
+        get_settings().openrouter_base_url,
+        apply=apply,
+        operator_id=operator["id"],
+    )
+    for item in results:
+        if item["applied"]:
+            await audit(
+                registry.redis, operator["id"], "pool_key.sync_limits", item["key_id"],
+                {"changes": item["changes"]},
+            )
+    return {
+        "applied": apply,
+        "checked": len(results),
+        "updated": sum(1 for r in results if r["status"] == "updated"),
+        "drift": sum(1 for r in results if r["status"] == "drift"),
+        "errors": sum(1 for r in results if r["status"] == "error"),
+        "keys": results,
+    }
 
 
 @ops_router.get("/utilization")
