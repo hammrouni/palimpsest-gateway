@@ -1,12 +1,12 @@
 [project]
 name = "palimpsest-gateway"
-version = "1.1.0"
+version = "1.1.1"
 description = "OpenAI-compatible gateway pooling your LLM keys, with failover and session continuity"
 readme = "README.md"
 requires-python = ">=3.11"
 license = "MIT"
 authors = [
-    {name = "Palimpsest Team", email = "contact@palimpsest.com"}
+    {name = "Palimpsest Team", email = "hammrouni.khaled@gmail.com"}
 ]
 keywords = ["llm", "api-gateway", "openai-compatible", "failover", "fastapi", "self-hosted", "proxy", "redis"]
 classifiers = [

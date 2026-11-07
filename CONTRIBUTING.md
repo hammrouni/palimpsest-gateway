@@ -21,9 +21,9 @@ Please use the [issue tracker](https://github.com/hammrouni/palimpsest-gateway/i
 
 ## Pull Requests
 
-1. Fork the repository and create a new branch from `main`.
+1. Fork the repository and create a `feature/<name>` branch from `develop` (not `main`; see the [branching model](docs/DEVELOPMENT.md#branching-model-git-flow)).
 2. Make your changes, ensuring you follow the coding standards and include tests where appropriate.
 3. Run the test suite and linter as described above.
-4. Submit a pull request with a clear description of your changes.
+4. Submit a pull request against `develop` with a clear description of your changes.
 
 Thank you for your contribution!

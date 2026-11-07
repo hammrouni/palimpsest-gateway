@@ -17,7 +17,12 @@ from app.pool.models import Provider
 from app.pool.registry import KeyNotFoundError, PoolRegistry
 from app.provider.adapter import AttemptResult, CandidateGoneError, ProviderAttemptError
 from app.provider.adapter import attempt as adapter_attempt
-from app.router.classify import Classification, classify, is_connectivity_error, pause_reason
+from app.router.classify import (
+    Classification,
+    classify,
+    is_connectivity_error,
+    pause_reason,
+)
 from app.router.exhaustion import PoolExhaustedError
 from app.router.rebuild import RebuildHook, identity_rebuild
 from app.router.retry_hint import get_quota_reset_seconds, retry_after_seconds

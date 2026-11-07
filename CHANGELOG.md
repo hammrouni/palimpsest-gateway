@@ -12,6 +12,19 @@ drift. The running version is shown in the dashboard's **System** section and in
 
 ## [Unreleased]
 
+## [1.1.1] - 2026-11-07
+
+### Changed
+- The user guide's failover table, key states, selection order and troubleshooting now
+  match model-scoped pauses and master models; README uses plain hyphens.
+- Package metadata uses the maintainer contact email.
+
+### Fixed
+- Import order in the failover module, so the CI lint step passes.
+- Development now follows Git Flow: `develop` is the integration branch, `main` holds
+  tagged releases. Documented in `docs/DEVELOPMENT.md` and `CONTRIBUTING.md`; CI also
+  runs on `develop`.
+
 ## [1.1.0] - 2026-11-07
 
 ### Added
@@ -68,6 +81,7 @@ drift. The running version is shown in the dashboard's **System** section and in
   with failover, per-key and per-user caps, session history, an operator API and
   dashboard.
 
-[Unreleased]: https://github.com/hammrouni/palimpsest-gateway/compare/v1.1.0...HEAD
+[Unreleased]: https://github.com/hammrouni/palimpsest-gateway/compare/v1.1.1...HEAD
+[1.1.1]: https://github.com/hammrouni/palimpsest-gateway/compare/v1.1.0...v1.1.1
 [1.1.0]: https://github.com/hammrouni/palimpsest-gateway/compare/v1.0.0...v1.1.0
 [1.0.0]: https://github.com/hammrouni/palimpsest-gateway/releases/tag/v1.0.0
