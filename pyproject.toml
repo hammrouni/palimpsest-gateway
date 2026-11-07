@@ -6,7 +6,7 @@ readme = "README.md"
 requires-python = ">=3.11"
 license = "MIT"
 authors = [
-    {name = "Palimpsest Team", email = "contact@palimpsest.com"}
+    {name = "Palimpsest Team", email = "hammrouni.khaled@gmail.com"}
 ]
 keywords = ["llm", "api-gateway", "openai-compatible", "failover", "fastapi", "self-hosted", "proxy", "redis"]
 classifiers = [
