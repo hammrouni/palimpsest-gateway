@@ -1473,3 +1473,54 @@ h4 {
 .model-card .cell-line {
   flex-wrap: wrap;
 }
+
+/* Selected models as removable chips. */
+.picker-chosen {
+  display: flex;
+  flex-direction: column;
+  gap: 0.4rem;
+  margin-bottom: 0.6rem;
+}
+.picker-chosen__head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.5rem;
+}
+.picker-chips {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.35rem;
+  max-height: 9.5rem;
+  overflow-y: auto;
+}
+.chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.25rem;
+  max-width: 100%;
+  padding: 0.15rem 0.2rem 0.15rem 0.55rem;
+  border: 1px solid var(--border, rgba(127, 127, 127, 0.35));
+  border-radius: 999px;
+  font-size: 0.85em;
+}
+.chip__text {
+  overflow-wrap: anywhere;
+}
+.chip__remove {
+  border: 0;
+  background: transparent;
+  color: inherit;
+  cursor: pointer;
+  font-size: 1.1em;
+  line-height: 1;
+  padding: 0.1rem 0.4rem;
+  border-radius: 999px;
+}
+.chip__remove:hover,
+.chip__remove:focus-visible {
+  background: rgba(220, 60, 60, 0.2);
+}
+.picker-tools {
+  flex-wrap: wrap;
+}

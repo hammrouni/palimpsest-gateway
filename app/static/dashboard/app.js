@@ -1413,8 +1413,16 @@ function buildModelPicker(input, load) {
   freeOnly.type = 'checkbox';
   const freeLabel = el('label', 'picker-free');
   freeLabel.append(freeOnly, el('span', null, 'Free only'));
+  const selectShown = el('button', 'ghost', 'Select shown');
+  selectShown.type = 'button';
+  const unselectShown = el('button', 'ghost', 'Unselect shown');
+  unselectShown.type = 'button';
+  const selectedOnly = el('input');
+  selectedOnly.type = 'checkbox';
+  const selectedLabel = el('label', 'picker-free');
+  selectedLabel.append(selectedOnly, el('span', null, 'Selected only'));
   const tools = el('div', 'picker-tools');
-  tools.append(filter, freeLabel);
+  tools.append(filter, freeLabel, selectedLabel, selectShown, unselectShown);
   tools.hidden = true;
 
   const list = el('div', 'picker-list');
@@ -1423,11 +1431,47 @@ function buildModelPicker(input, load) {
   let catalog = [];
   const rows = new Map();
 
+  /* Everything the key serves, as removable chips: one click drops a model, so the
+     list is readable and editable without hunting through a comma-separated line. */
+  const chosenBox = el('div', 'picker-chosen');
+  const chosenHead = el('div', 'picker-chosen__head');
+  const chosenCount = el('strong', null, '');
+  const clearAll = el('button', 'ghost', 'Remove all');
+  clearAll.type = 'button';
+  chosenHead.append(chosenCount, clearAll);
+  const chips = el('div', 'picker-chips');
+  chosenBox.append(chosenHead, chips);
+
+  const setChosen = (ids) => {
+    input.value = ids.join(', ');
+    input.dispatchEvent(new Event('input', { bubbles: true }));
+  };
+  const drawChips = () => {
+    const ids = parseModelList(input);
+    chosenCount.textContent = ids.length ? ids.length + ' selected' : 'No models selected';
+    clearAll.hidden = ids.length < 2;
+    chips.replaceChildren(
+      ...ids.map((id) => {
+        const chip = el('span', 'chip');
+        chip.append(el('span', 'chip__text', id));
+        const remove = el('button', 'chip__remove', '×');
+        remove.type = 'button';
+        remove.title = 'Remove ' + id;
+        remove.setAttribute('aria-label', 'Remove ' + id);
+        remove.addEventListener('click', () => setChosen(parseModelList(input).filter((m) => m !== id)));
+        chip.append(remove);
+        return chip;
+      })
+    );
+  };
+  clearAll.addEventListener('click', () => setChosen([]));
+
   const syncChecks = () => {
     const chosen = new Set(parseModelList(input));
     for (const [id, row] of rows) {
       row.box.checked = chosen.has(id);
     }
+    drawChips();
     summary();
   };
   const summary = () => {
@@ -1442,9 +1486,22 @@ function buildModelPicker(input, load) {
     const needle = filter.value.trim().toLowerCase();
     for (const [id, row] of rows) {
       const hay = (id + ' ' + (row.name || '')).toLowerCase();
-      row.node.hidden = (needle && !hay.includes(needle)) || (freeOnly.checked && !row.free);
+      row.node.hidden =
+        (needle && !hay.includes(needle)) ||
+        (freeOnly.checked && !row.free) ||
+        (selectedOnly.checked && !row.box.checked);
     }
   };
+  const shownIds = () => [...rows].filter(([, row]) => !row.node.hidden).map(([id]) => id);
+  selectShown.addEventListener('click', () => {
+    const next = new Set(parseModelList(input));
+    for (const id of shownIds()) next.add(id);
+    setChosen([...next]);
+  });
+  unselectShown.addEventListener('click', () => {
+    const drop = new Set(shownIds());
+    setChosen(parseModelList(input).filter((id) => !drop.has(id)));
+  });
 
   const draw = () => {
     rows.clear();
@@ -1463,8 +1520,7 @@ function buildModelPicker(input, load) {
         if (box.checked) {
           chosen.push(model.id);
         }
-        input.value = chosen.join(', ');
-        summary();
+        setChosen(chosen);
       });
       rows.set(model.id, { node, box, name: model.name, free: Boolean(model.free) });
       list.append(node);
@@ -1497,7 +1553,12 @@ function buildModelPicker(input, load) {
 
   filter.addEventListener('input', applyFilter);
   freeOnly.addEventListener('change', applyFilter);
-  input.addEventListener('input', syncChecks);
+  input.addEventListener('input', () => {
+    syncChecks();
+    applyFilter();
+  });
+  selectedOnly.addEventListener('change', applyFilter);
+  drawChips();
 
   /* Called when the surrounding form is reset, so a new key starts with no list. */
   wrap.clear = () => {
@@ -1507,9 +1568,11 @@ function buildModelPicker(input, load) {
     list.hidden = true;
     tools.hidden = true;
     status.report('', 'ok');
+    /* The reset event fires before the field is emptied; redraw once it has been. */
+    setTimeout(drawChips, 0);
   };
 
-  wrap.append(fetch, status.node, tools, list);
+  wrap.append(chosenBox, fetch, status.node, tools, list);
   return wrap;
 }
 
@@ -1709,6 +1772,7 @@ const health = {
   summary: null,
   keyTable: null,
   eventTable: null,
+  modelList: null,
   loadMore: null,
 };
 
@@ -1772,7 +1836,6 @@ function metricCard(label, value, detail, fraction) {
   if (fraction !== null && fraction !== undefined) {
     card.append(meter(fraction));
   }
-  modelList: null,
   card.append(el('span', 'metric-detail', detail));
   return card;
 }
@@ -1958,6 +2021,23 @@ const STATE_LABELS = {
   suspended: 'Suspended',
 };
 
+const PAUSE_REASONS = {
+  no_credits: 'out of credits',
+  daily_limit: 'daily limit reached',
+  rate_limit: 'rate limited',
+  network: 'network error',
+  provider_error: 'provider error',
+  model_unavailable: 'model not available',
+  auth: 'key refused',
+};
+
+/* "daily limit reached, back in 7h 14m (at 01:00)": the cause, the wait and the clock time. */
+function backIn(seconds, reason) {
+  const wait = Math.max(0, Math.round(seconds || 0));
+  const text = 'back in ' + humanizeSeconds(wait) + ' (at ' + formatDate(new Date(Date.now() + wait * 1000).toISOString()) + ')';
+  return reason ? reason + ', ' + text : text;
+}
+
 /* When the key's counters start again: the countdown, and the moment it points at. */
 function renewCell(key) {
   const cell = el('td');
@@ -2021,23 +2101,6 @@ function drawUtilizationKeys() {
   const rowFor = (key) => {
     const name = el('td');
     name.textContent = keyName(key);
-const PAUSE_REASONS = {
-  no_credits: 'out of credits',
-  daily_limit: 'daily limit reached',
-  rate_limit: 'rate limited',
-  network: 'network error',
-  provider_error: 'provider error',
-  model_unavailable: 'model not available',
-  auth: 'key refused',
-};
-
-/* "daily limit reached, back in 7h 14m (at 01:00)": the cause, the wait and the clock time. */
-function backIn(seconds, reason) {
-  const wait = Math.max(0, Math.round(seconds || 0));
-  const text = 'back in ' + humanizeSeconds(wait) + ' (at ' + formatDate(new Date(Date.now() + wait * 1000).toISOString()) + ')';
-  return reason ? reason + ', ' + text : text;
-}
-
     name.title = 'Key ' + key.key_id;
 
     /* Everything about a key stays on its one row, notes included. */
@@ -2045,6 +2108,8 @@ function backIn(seconds, reason) {
     const statusLine = el('div', 'cell-line');
     status.append(statusLine);
     statusLine.append(el('span', 'badge badge--' + key.state, STATE_LABELS[key.state] || key.state));
+    /* Say why a key is held back and when it returns: "back in 7h 14m (at 01:00)". */
+    const reason = PAUSE_REASONS[key.pause_reason];
     if (key.state === 'cooldown' && key.cooldown_remaining_s) {
       statusLine.append(el('span', 'note', backIn(key.cooldown_remaining_s, reason)));
     } else if (key.state === 'exhausted' && key.exhausted_reset_at) {
@@ -2095,6 +2160,46 @@ function backIn(seconds, reason) {
   );
 }
 
+/* Models a key cannot serve right now, merged across keys: one card per model, not a table
+   row, so long model ids wrap instead of forcing a sideways scroll. */
+function drawUnavailableModels() {
+  const keys = health.utilization ? health.utilization.keys : [];
+  const byModel = new Map();
+  for (const key of keys) {
+    for (const cooling of key.cooling_models || []) {
+      const entry = byModel.get(cooling.model) || { model: cooling.model, keys: 0, seconds: 0, reason: null, providers: new Set() };
+      entry.keys += 1;
+      entry.seconds = Math.max(entry.seconds, cooling.seconds_remaining || 0);
+      entry.reason = entry.reason || cooling.reason;
+      if (key.provider) entry.providers.add(key.provider);
+      byModel.set(cooling.model, entry);
+    }
+  }
+  const entries = [...byModel.values()].sort((a, b) => b.seconds - a.seconds || a.model.localeCompare(b.model));
+  if (!entries.length) {
+    health.modelList.replaceChildren(el('p', 'note', 'No models are paused.'));
+    return;
+  }
+  const list = el('div', 'model-cards');
+  for (const entry of entries) {
+    const card = el('div', 'model-card');
+    card.append(el('div', 'model-card__name', entry.model));
+    const meta = el('div', 'cell-line');
+    const reason = PAUSE_REASONS[entry.reason] || 'paused';
+    meta.append(
+      el('span', 'badge badge--' + (entry.reason === 'model_unavailable' ? 'suspended' : 'cooldown'), reason),
+      el('span', 'note', backIn(entry.seconds, null)),
+      el('span', 'note', [...entry.providers].join(', ') + ' · ' + plural(entry.keys, 'key'))
+    );
+    card.append(meta);
+    list.append(card);
+  }
+  health.modelList.replaceChildren(
+    el('p', 'note', 'A model is paused on a key when the provider reports it missing, limited or failing. The key keeps serving its other models.'),
+    list
+  );
+}
+
 const OUTCOME_TONES = {
   success: 'active',
   exhausted_503: 'cooldown',
@@ -2110,8 +2215,6 @@ function failoverKeyName(id) {
 }
 
 function drawEvents() {
-    /* Say why a key is held back and when it returns: "back in 7h 14m (at 01:00)". */
-    const reason = PAUSE_REASONS[key.pause_reason];
   if (!health.events.length) {
     health.eventTable.replaceChildren(
       el(
@@ -2160,46 +2263,6 @@ function drawEvents() {
       keys,
       el('td', null, String(event.status)),
       request
-/* Models a key cannot serve right now, merged across keys: one card per model, not a table
-   row, so long model ids wrap instead of forcing a sideways scroll. */
-function drawUnavailableModels() {
-  const keys = health.utilization ? health.utilization.keys : [];
-  const byModel = new Map();
-  for (const key of keys) {
-    for (const cooling of key.cooling_models || []) {
-      const entry = byModel.get(cooling.model) || { model: cooling.model, keys: 0, seconds: 0, reason: null, providers: new Set() };
-      entry.keys += 1;
-      entry.seconds = Math.max(entry.seconds, cooling.seconds_remaining || 0);
-      entry.reason = entry.reason || cooling.reason;
-      if (key.provider) entry.providers.add(key.provider);
-      byModel.set(cooling.model, entry);
-    }
-  }
-  const entries = [...byModel.values()].sort((a, b) => b.seconds - a.seconds || a.model.localeCompare(b.model));
-  if (!entries.length) {
-    health.modelList.replaceChildren(el('p', 'note', 'No models are paused.'));
-    return;
-  }
-  const list = el('div', 'model-cards');
-  for (const entry of entries) {
-    const card = el('div', 'model-card');
-    card.append(el('div', 'model-card__name', entry.model));
-    const meta = el('div', 'cell-line');
-    const reason = PAUSE_REASONS[entry.reason] || 'paused';
-    meta.append(
-      el('span', 'badge badge--' + (entry.reason === 'model_unavailable' ? 'suspended' : 'cooldown'), reason),
-      el('span', 'note', backIn(entry.seconds, null)),
-      el('span', 'note', [...entry.providers].join(', ') + ' · ' + plural(entry.keys, 'key'))
-    );
-    card.append(meta);
-    list.append(card);
-  }
-  health.modelList.replaceChildren(
-    el('p', 'note', 'A model is paused on a key when the provider reports it missing, limited or failing. The key keeps serving its other models.'),
-    list
-  );
-}
-
     );
     tbody.append(tr);
   }
@@ -2227,6 +2290,7 @@ function drawUnavailableModels() {
 function drawHealth() {
   drawSummary();
   drawUtilizationKeys();
+  drawUnavailableModels();
   drawEvents();
   health.loadMore.hidden = health.nextBefore === null;
 }
@@ -2290,7 +2354,6 @@ async function loadHealth() {
       health.utilization.keys.length + ' key(s) · ' + health.events.length + ' failover event(s).',
       'ok'
     );
-  drawUnavailableModels();
   }
   drawHealth();
 }
@@ -2328,6 +2391,7 @@ function renderHealth(view) {
   health.keyTable = el('div', 'table-wrap');
   health.group = savedChoice('group.keys', 'provider', KEY_GROUPS.map((entry) => entry[0]));
   health.eventTable = el('div', 'table-wrap');
+  health.modelList = el('div', 'model-list');
 
   const groupBy = pairSelect(KEY_GROUPS, health.group);
   groupBy.addEventListener('change', () => {
@@ -2348,6 +2412,8 @@ function renderHealth(view) {
       health.summary,
       el('h3', null, 'Utilization by key'),
       health.keyTable,
+      el('h3', null, 'Unavailable models'),
+      health.modelList,
       el('h3', null, 'Failover events'),
       health.eventTable,
       health.loadMore,
@@ -2391,7 +2457,6 @@ function buildCreateForm(modal) {
   form.noValidate = true;
 
   const displayName = el('input');
-  health.modelList = el('div', 'model-list');
   displayName.type = 'text';
   displayName.name = 'displayName';
   displayName.id = 'new-account-name';
@@ -2412,8 +2477,6 @@ function buildCreateForm(modal) {
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({ display_name: displayName.value.trim() }),
         }),
-      el('h3', null, 'Unavailable models'),
-      health.modelList,
         async (created) => {
           form.reset();
           /* The one-time key gets its own dismissible block rather than a status
