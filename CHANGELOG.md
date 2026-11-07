@@ -12,6 +12,11 @@ drift. The running version is shown in the dashboard's **System** section and in
 
 ## [Unreleased]
 
+### Changed
+- Development now follows Git Flow: `develop` is the integration branch, `main` holds
+  tagged releases. Documented in `docs/DEVELOPMENT.md` and `CONTRIBUTING.md`; CI also
+  runs on `develop`.
+
 ## [1.1.0] - 2026-11-07
 
 ### Added

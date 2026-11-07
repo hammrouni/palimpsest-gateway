@@ -180,16 +180,49 @@ Operator analytics live in `app/api/operator_insights.py` and read from `app/usa
 
 ### Release a version
 
+Follow the [branching model](#branching-model-git-flow): cut `release/x.y.z` from `develop`, then:
+
 1. Move the entries under `## [Unreleased]` in [CHANGELOG.md](../CHANGELOG.md) into a new `## [x.y.z] - YYYY-MM-DD` section (Added, Changed, Fixed).
 2. Set the same number in `pyproject.toml` and `app/__init__.py` (`project_version` in `app/config.py` follows `__version__`), and in the `palimpsest-gateway` entry of `uv.lock`.
 3. Run the tests. `tests/test_version.py` fails if any copy disagrees with the changelog.
-4. Commit, then tag: `git tag v<x.y.z>`.
+4. Merge the release branch into `main`, tag it there (`git tag -a v<x.y.z>`), then merge it back into `develop`.
 
 Raise the minor number for a feature, the patch number for a fix and the major number for a breaking change.
 
 ### Add a provider
 
 A deliberate code change in `app/pool/models.py` — the `Provider` enum and its adapter in `app/provider/adapter.py`. It is not a config value.
+
+## Branching model (Git Flow)
+
+| Branch | Purpose |
+| :--- | :--- |
+| `main` | Released code only. Every commit on it is a release and carries a tag `vX.Y.Z`. |
+| `develop` | Integration branch. All finished work lands here first. |
+| `feature/<name>` | One change. Branch from `develop`, merge back into `develop`. |
+| `release/X.Y.Z` | Freezes `develop` for a release: only the version bump, the changelog and fixes. |
+| `hotfix/X.Y.Z` | An urgent fix to released code. Branch from `main`, merge into `main` and `develop`. |
+
+Merge with `--no-ff` so each feature and release stays one visible unit. Commit messages use the `type(scope): summary` style seen in the log (`feat`, `fix`, `docs`, `chore`, `style`, `test`).
+
+```bash
+# a feature
+git switch develop && git switch -c feature/my-change
+# ...work, commit, then:
+git switch develop && git merge --no-ff feature/my-change
+
+# a release
+git switch develop && git switch -c release/1.2.0
+# bump the version and the changelog (see "Release a version"), then:
+git switch main && git merge --no-ff release/1.2.0 && git tag -a v1.2.0 -m "Palimpsest Gateway 1.2.0"
+git switch develop && git merge --no-ff release/1.2.0 && git branch -d release/1.2.0
+
+# a hotfix
+git switch main && git switch -c hotfix/1.2.1
+# fix, bump the patch version and the changelog, then merge into main (tag v1.2.1) and into develop
+```
+
+Releases are tagged on `main`. Never rewrite history that has been pushed.
 
 ## Before you push
 
