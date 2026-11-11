@@ -97,7 +97,7 @@ class OperatorStore:
                     "prefix": prefix,
                     "key_material": ciphertext,
                     "created_at": now,
-                    "last_used_at": now,
+                    "last_used_at": "",
                     "status": "active",
                 },
             )

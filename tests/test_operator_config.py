@@ -32,6 +32,7 @@ _CORE_TUNABLES = {
 
 # Plus the rest the Dev Notes classify as operator-tunable.
 _TUNABLE_FIELDS = _CORE_TUNABLES | {
+    "failover_max_wait_seconds",
     "failover_event_log_size",
     "request_log_ttl_hours",
     "share_models_by_provider",

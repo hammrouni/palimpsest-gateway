@@ -12,6 +12,49 @@ drift. The running version is shown in the dashboard's **System** section and in
 
 ## [Unreleased]
 
+### Added
+- Rate-limit refusals are counted as **throttled**, not as errors. `pool_exhausted`,
+  a rate-limited `budget_exhausted` and user-cap refusals no longer raise the error
+  rate, lower the success rate or skew latency; the dashboard draws them as their own
+  line (Overview, Performance, user details).
+- A client that retries before its `Retry-After` is recorded once per account and
+  model; further refusals in that window only count as repeats.
+- `failover_max_wait_seconds` (env `PALIMPSEST_FAILOVER_MAX_WAIT_SECONDS`, runtime
+  0-30, default 0 = off): when every key is paused but one is back within that time,
+  the request waits for it instead of answering 429.
+
+### Changed
+- An empty pool is refused right after admission, before the session lock and history
+  read, and the admission is given back.
+- A retry budget spent only on rate or quota limits answers `429 budget_exhausted`
+  with `Retry-After` and "All N keys tried for model ... are rate-limited"; other
+  spent budgets stay `503`.
+- A user-cap `429` now carries `Retry-After` (until the cap resets).
+- Docs: `pool_exhausted` is documented as the `429` it already was.
+- Dashboard views are much faster on a busy gateway. The pool state read no longer
+  scans the whole Redis keyspace once per key (Utilization, Alerts and Overview took
+  8-17 s with 40 keys and 20k requests; now under 0.3 s). Analytics summaries group
+  counters once instead of rescanning them per user, model and key; Overview reads
+  the previous window's totals only and evaluates alerts on the pool view it already
+  holds. `redis[hiredis]` adds the C reply parser.
+- Dashboard: sections show a loading placeholder instead of a blank panel, scrollbars
+  are thin and themed, account names are fetched once per page load, and the
+  "Last modified by" column shows a short operator id (full id on hover).
+- Landing site: the header logo loads a 64 px image instead of the 512 px one, and
+  the hero logo reserves its real aspect ratio.
+
+### Fixed
+- Pool Keys: the State, Provider and Search filters had no effect (they were sent to
+  an API that ignores them) and every redraw refetched the list.
+- Limits dialog: no second provider call after the first one failed, no doubled full
+  stop in the sync message, a failed sync no longer hides the dialog, and the table
+  refreshes after a sync changes the cap or used count.
+- New user and operator keys no longer report a "last used" time before their first
+  use; the API returns `null` until then.
+- Charts: the last date label is no longer cut off, and it no longer overlaps the
+  label before it.
+- Costs: a zero amount shows as 0.00 instead of 0.0000.
+
 ## [1.1.1] - 2026-11-07
 
 ### Changed

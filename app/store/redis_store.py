@@ -277,7 +277,7 @@ class RedisStore:
             "prefix": prefix_of(raw_key),
             "key_hash": key_hash,
             "created_at": now,
-            "last_used_at": now,
+            "last_used_at": "",
             "status": "active",
         }
 

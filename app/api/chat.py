@@ -17,10 +17,12 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
+import math
 import re
 import time
 from collections.abc import AsyncIterator
 from dataclasses import dataclass
+from datetime import UTC, datetime
 from typing import Annotated
 
 from fastapi import APIRouter, Depends, Header, Request
@@ -43,7 +45,7 @@ from app.pool.registry import PoolRegistry
 from app.pool.tokens import add_tokens
 from app.provider.adapter import AttemptResult
 from app.router.exhaustion import PoolExhaustedError, render_exhausted, render_fatal
-from app.router.failover import FailoverTrace, execute_with_failover
+from app.router.failover import FailoverTrace, capacity_refusal, execute_with_failover
 from app.router.master import effective_model
 from app.router.rebuild import identity_rebuild
 from app.schemas.chat import (
@@ -208,6 +210,8 @@ class _Turn:
     stream_started: bool = False
     # Milliseconds until the first streamed chunk reached the client.
     first_chunk_ms: int | None = None
+    # Seconds the client was told to wait (Retry-After) on a throttled refusal.
+    retry_after_s: int | None = None
 
     def latency_ms(self) -> int:
         return int((time.monotonic() - self.started) * 1000)
@@ -297,6 +301,7 @@ class _Turn:
             provider=provider,
             key_id=key_id,
             ttft_ms=self.first_chunk_ms,
+            retry_after_s=self.retry_after_s,
         )
         if (
             outcome not in SERVED_OUTCOMES
@@ -355,6 +360,9 @@ class _Turn:
     def error(self, err: GatewayError) -> GatewayError:
         """Attach this request's identity headers to an error about to be raised."""
         err.headers = {**(err.headers or {}), **self.headers()}
+        retry_after = err.headers.get("Retry-After")
+        if retry_after and retry_after.isdigit():
+            self.retry_after_s = int(retry_after)
         return err
 
 
@@ -382,6 +390,14 @@ def _empty_trace(model: str) -> FailoverTrace:
     return FailoverTrace(model=model, attempts=(), terminal="fatal", retry_count=0)
 
 
+def _seconds_until(moment: datetime | None) -> int | None:
+    """Whole seconds from now until ``moment`` (at least 1), or None."""
+    if moment is None:
+        return None
+    seconds = math.ceil((moment - datetime.now(UTC)).total_seconds())
+    return max(1, seconds)
+
+
 async def _admit(turn: _Turn) -> None:
     """Admission gate; a rejection costs nothing."""
     try:
@@ -400,20 +416,24 @@ async def _admit(turn: _Turn) -> None:
             )
         ) from err
     if not admission.admitted:
+        # Tell the client when to come back, as the pool-exhausted 429 does.
+        wait = _seconds_until(admission.next_reset)
+        err = turn.error(
+            GatewayError(
+                message=admission.message,
+                status_code=429,
+                error_type="rate_limit_error",
+                code=admission.code,
+                headers={"Retry-After": str(wait)} if wait is not None else None,
+            )
+        )
         turn.log(
             429,
             "rejected_user_cap"
             if admission.code == "user_quota_exhausted"
             else "rejected_pool_low_water",
         )
-        raise turn.error(
-            GatewayError(
-                message=admission.message,
-                status_code=429,
-                error_type="rate_limit_error",
-                code=admission.code,
-            )
-        )
+        raise err
 
 
 async def _bind_session(turn: _Turn, x_session_id: str | None) -> dict | None:
@@ -811,6 +831,16 @@ async def chat_completions(
 
     await _admit(turn)
     metadata = await _bind_session(turn, x_session_id)
+
+    # No key can serve the model right now: answer before the session lock and
+    # history read, and give the admission back, so a client retrying through a
+    # rate-limit wait costs neither quota nor work.
+    refusal = await capacity_refusal(PoolRegistry(store.redis), request.model)
+    if refusal is not None:
+        await refund(turn.account_id, redis=turn.redis)
+        rendered = turn.error(render_exhausted(refusal, model=request.model))
+        turn.log(rendered.status_code, "exhausted_429", trace=refusal.trace)
+        raise rendered
 
     settings = get_settings()
     try:

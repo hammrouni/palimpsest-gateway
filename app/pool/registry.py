@@ -57,6 +57,11 @@ def _state_key(key_id: str) -> str:
     return f"pgw:pool:state:{key_id}"
 
 
+# SCAN walks the whole keyspace; a large COUNT keeps the round trips few. Only
+# key edits and removals scan, never the request path or the dashboard views.
+_SCAN_COUNT = 1000
+
+
 def _model_state_key(key_id: str, model: str) -> str:
     """Cooldown marker for one model on one key (the key stays routable for others)."""
     return f"{_state_key(key_id)}:model:{model}"
@@ -328,10 +333,10 @@ class PoolRegistry:
             pipe.delete(_digest_key(digest))
         pipe.delete(_state_key(key_id))
         await pipe.execute()
-        async for marker in self.redis.scan_iter(match=_state_key(key_id) + ":model:*"):
+        async for marker in self.redis.scan_iter(match=_state_key(key_id) + ":model:*", count=_SCAN_COUNT):
             await self.redis.delete(marker)
         await clear_observed(self.redis, key_id)
-        async for counter in self.redis.scan_iter(match=counter_pattern(key_id)):
+        async for counter in self.redis.scan_iter(match=counter_pattern(key_id), count=_SCAN_COUNT):
             await self.redis.delete(counter)
 
     # -- Reads used by selection, failover and operator views ---------------
@@ -381,15 +386,19 @@ class PoolRegistry:
         best: datetime | None = None
         records = await self.list()
         serving = self.serving_models(records)
-        for record in records:
-            if model not in serving[record.id] or record.state == KeyState.SUSPENDED:
-                continue
-            marker = (
-                _state_key(record.id)
-                if record.state in (KeyState.EXHAUSTED, KeyState.COOLDOWN)
-                else _model_state_key(record.id, model)
-            )
-            ttl = await self.redis.ttl(marker)
+        markers = [
+            _state_key(record.id)
+            if record.state in (KeyState.EXHAUSTED, KeyState.COOLDOWN)
+            else _model_state_key(record.id, model)
+            for record in records
+            if model in serving[record.id] and record.state != KeyState.SUSPENDED
+        ]
+        if not markers:
+            return None
+        pipe = self.redis.pipeline(transaction=False)
+        for marker in markers:
+            pipe.ttl(marker)
+        for ttl in await pipe.execute():
             if ttl is None or ttl <= 0:
                 continue
             until = now + timedelta(seconds=ttl)
@@ -400,34 +409,10 @@ class PoolRegistry:
     async def _forget_model_pauses(self, key_id: str, keep: set[str] | frozenset[str]) -> None:
         """Delete the per-model pauses of models a key no longer serves."""
         prefix = _state_key(key_id) + ":model:"
-        async for raw in self.redis.scan_iter(match=prefix + "*"):
+        async for raw in self.redis.scan_iter(match=prefix + "*", count=_SCAN_COUNT):
             name = raw.decode() if isinstance(raw, bytes) else raw
             if name[len(prefix):] not in keep:
                 await self.redis.delete(name)
-
-    async def _cooling_models(
-        self, key_id: str, serving: frozenset[str] | None = None
-    ) -> list[dict]:
-        """Models paused on a key. With ``serving``, models it no longer serves are left out."""
-        prefix = _state_key(key_id) + ":model:"
-        cooling = []
-        async for raw in self.redis.scan_iter(match=prefix + "*"):
-            name = raw.decode() if isinstance(raw, bytes) else raw
-            if serving is not None and name[len(prefix):] not in serving:
-                continue
-            ttl = await self.redis.ttl(name)
-            if ttl is not None and ttl > 0:
-                reason = await self.redis.hget(name, "reason")
-                if isinstance(reason, bytes):
-                    reason = reason.decode()
-                cooling.append(
-                    {
-                        "model": name[len(prefix):],
-                        "seconds_remaining": float(ttl),
-                        "reason": reason or None,
-                    }
-                )
-        return sorted(cooling, key=lambda item: item["model"])
 
     async def effective_state(self, key_id: str) -> KeyState:
         """The key's effective state; raises ``KeyNotFoundError`` if absent."""
@@ -482,19 +467,52 @@ class PoolRegistry:
         )
 
     async def list_states(self) -> list[KeyStateView]:
-        """All keys + effective state + reset_at + time-remaining-on-marker."""
-        views = []
+        """All keys + effective state + reset_at + time-remaining-on-marker.
+
+        One pipelined batch for every key. The per-model markers are read by
+        name from the models each key serves, never found by scanning the
+        keyspace: a SCAN walks every key Redis holds (sessions, usage, ...), so
+        doing one per pool key made this view grow with all stored data.
+        """
         records = await self.list()
+        if not records:
+            return []
         serving = self.serving_models(records)
+
+        pipe = self.redis.pipeline(transaction=False)
+        plan: list[tuple[KeyRecord, bool, list[str]]] = []
         for record in records:
+            paused = record.state in (KeyState.EXHAUSTED, KeyState.COOLDOWN)
+            if paused:
+                pipe.ttl(_state_key(record.id))
+                pipe.hget(_state_key(record.id), "reason")
+            models = sorted(serving[record.id])
+            for model in models:
+                pipe.ttl(_model_state_key(record.id, model))
+                pipe.hget(_model_state_key(record.id, model), "reason")
+            plan.append((record, paused, models))
+        replies = iter(await pipe.execute())
+
+        def text(value: Any) -> str | None:
+            value = value.decode() if isinstance(value, bytes) else value
+            return value or None
+
+        views = []
+        for record, paused, models in plan:
             seconds_remaining = None
             reason = None
-            if record.state in (KeyState.EXHAUSTED, KeyState.COOLDOWN):
-                ttl = await self.redis.ttl(_state_key(record.id))
+            if paused:
+                ttl, raw_reason = next(replies), next(replies)
                 if ttl is not None and ttl >= 0:
                     seconds_remaining = float(ttl)
-                raw_reason = await self.redis.hget(_state_key(record.id), "reason")
-                reason = raw_reason.decode() if isinstance(raw_reason, bytes) else raw_reason
+                reason = text(raw_reason)
+            cooling = []
+            for model in models:
+                ttl, raw_reason = next(replies), next(replies)
+                if ttl is not None and ttl > 0:
+                    cooling.append(
+                        {"model": model, "seconds_remaining": float(ttl), "reason": text(raw_reason)}
+                    )
             views.append(
                 KeyStateView(
                     id=record.id,
@@ -503,8 +521,8 @@ class PoolRegistry:
                     state=record.state,
                     reset_at=record.reset_at,
                     seconds_remaining=seconds_remaining,
-                    reason=reason or None,
-                    cooling_models=await self._cooling_models(record.id, serving[record.id]),
+                    reason=reason,
+                    cooling_models=cooling,
                 )
             )
         return views

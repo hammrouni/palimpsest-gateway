@@ -286,3 +286,29 @@ async def test_stream_break_records_the_cause_without_leaking_it(
     assert record["failures"] == [{"status_code": None, "classification": "stream:_Boom 502"}]
     assert "stream:_Boom 502" in caplog.text
     assert "sk-live-abcdef123456" not in caplog.text  # redacted
+
+
+@pytest.mark.asyncio
+async def test_totals_between_matches_the_daily_view(redis):
+    """The cheap previous-window read agrees with the full per-day breakdown."""
+    from datetime import UTC, datetime, timedelta
+
+    from app.usage.stats import StatsStore
+
+    now = datetime(2026, 3, 20, 12, tzinfo=UTC)
+    store = UsageStore(redis)
+    for offset, outcome, status in [(1, "success", 200), (8, "success", 200), (9, "exhausted_503", 503),
+                                    (10, "success", 200), (15, "success", 200)]:
+        await store.record_request(
+            request_id=f"r{offset}", account_id="acct", session_id=None, model="m",
+            status_code=status, outcome=outcome, latency_ms=150, stream=False, attempts=1,
+            prompt_tokens=10, completion_tokens=5, provider="openai", key_id="k",
+            now=now - timedelta(days=offset),
+        )
+
+    stats = StatsStore(redis)
+    previous = await stats.totals_between(7, skip=7, now=now)
+    full = (await stats.daily(14, now))["daily"][:7]  # oldest seven of the fourteen
+    for field in ("requests", "ok", "errors_5xx", "exhausted", "prompt_tokens", "latency_sum_ms"):
+        assert previous[field] == sum(day[field] for day in full), field
+    assert previous["requests"] == 3

@@ -139,6 +139,16 @@ async def test_revoke_key_wrong_account_denied(store):
 
 
 @pytest.mark.asyncio
+async def test_new_key_has_never_been_used(store):
+    """A freshly created key reports no last use until it authenticates a request."""
+    created = await store.create_account()
+    key_id = created["keys"][0]["id"]
+
+    key = await store.get_key(key_id)
+    assert key["last_used_at"] == ""
+
+
+@pytest.mark.asyncio
 async def test_update_key_last_used(store):
     """Update last_used_at (best-effort)."""
     created = await store.create_account()

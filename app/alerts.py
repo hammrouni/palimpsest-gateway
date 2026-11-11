@@ -70,15 +70,22 @@ def default_user_cap() -> int | None:
     return get_settings().user_daily_cap
 
 
-async def evaluate(redis: Any, rules: AlertRules | None = None) -> list[dict[str, Any]]:
-    """Alerts firing right now, most severe first."""
+async def evaluate(
+    redis: Any, rules: AlertRules | None = None, util: dict[str, Any] | None = None
+) -> list[dict[str, Any]]:
+    """Alerts firing right now, most severe first.
+
+    ``util`` is a ``utilization_view`` the caller already holds, to avoid reading
+    the pool twice.
+    """
     rules = rules or await AlertStore(redis).get()
     alerts: list[dict[str, Any]] = []
 
     def add(alert_id: str, severity: str, title: str, detail: str) -> None:
         alerts.append({"id": alert_id, "severity": severity, "title": title, "detail": detail})
 
-    util = await utilization_view(redis=redis)
+    if util is None:
+        util = await utilization_view(redis=redis)
     aggregate = util.get("aggregate") or {}
     if rules.key_problems:
         for key in util.get("keys", []):

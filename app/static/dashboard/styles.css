@@ -1555,3 +1555,54 @@ h4 {
   opacity: 0.75;
   overflow-wrap: anywhere;
 }
+
+/* Outcome of a provider limit sync, shown at the top of the Limits dialog. */
+.sync-note {
+  margin: 0 0 12px;
+  padding: 8px 12px;
+  border-radius: var(--radius);
+  font-size: 13px;
+}
+
+.sync-note--ok {
+  background: var(--ok-bg);
+  color: var(--ok);
+}
+
+.sync-note--error {
+  background: var(--error-bg);
+  color: var(--error);
+}
+
+/* Thin scrollbars in the theme's colours instead of the platform's heavy default. */
+* {
+  scrollbar-width: thin;
+  scrollbar-color: var(--border) transparent;
+}
+
+/* While a section loads, its still-empty content area shows a placeholder
+   instead of a blank panel. Only while the status line says it is loading, so
+   a failed load never shimmers forever. */
+.view:has(.page-head .status.is-pending, .page-head .status.is-busy) .page-body > :empty {
+  min-height: 220px;
+  border-radius: var(--radius);
+  background: linear-gradient(90deg, var(--head-bg) 25%, var(--surface) 50%, var(--head-bg) 75%);
+  background-size: 200% 100%;
+  animation: skeleton-shimmer 1.2s linear infinite;
+}
+
+/* The headline-number row is one row of cards, not a table. */
+.view:has(.page-head .status.is-pending, .page-head .status.is-busy) .page-body > .summary:empty {
+  min-height: 96px;
+}
+
+@keyframes skeleton-shimmer {
+  from { background-position: 100% 0; }
+  to { background-position: -100% 0; }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .view:has(.page-head .status.is-pending, .page-head .status.is-busy) .page-body > :empty {
+    animation: none;
+  }
+}

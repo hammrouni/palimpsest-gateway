@@ -6,6 +6,7 @@ single-attempt transport only.
 """
 from __future__ import annotations
 
+import asyncio
 import logging
 import time
 from dataclasses import dataclass
@@ -187,6 +188,44 @@ async def _exhausted(
     return error
 
 
+async def _short_wait(
+    registry: PoolRegistry, model: str, waited: float, deadline: float
+) -> float | None:
+    """Seconds to wait for a paused key serving ``model``, or None to give up.
+
+    Only when ``failover_max_wait_seconds`` allows it, the key is back within
+    what is left of that allowance, and the wait ends before the loop deadline.
+    """
+    allowance = get_settings().failover_max_wait_seconds - waited
+    if allowance <= 0:
+        return None
+    available = await registry.next_available_at(model)
+    if available is None:
+        return None
+    # A small margin so the marker has expired when we look again.
+    seconds = max(0.05, (available - datetime.now(UTC)).total_seconds() + 0.05)
+    if seconds > allowance or time.monotonic() + seconds >= deadline:
+        return None
+    return seconds
+
+
+async def capacity_refusal(registry: PoolRegistry, model: str) -> PoolExhaustedError | None:
+    """A ready ``pool_exhausted`` refusal when no key can serve ``model`` now.
+
+    Checked before the request is admitted, so a client retrying while the pool
+    is empty is answered at once: no admission charge, no session lock, no
+    history read. None when a key is available, or will be within
+    ``failover_max_wait_seconds`` (the loop then waits for it).
+    """
+    if await select(registry, model) is not None:
+        return None
+    start = time.monotonic()
+    deadline = start + get_settings().provider_timeout * 2
+    if await _short_wait(registry, model, 0.0, deadline) is not None:
+        return None
+    return await _exhausted(registry, model, "pool_exhausted", [], 0, start)
+
+
 async def execute_with_failover(
     registry: PoolRegistry,
     model: str,
@@ -213,6 +252,7 @@ async def execute_with_failover(
     excluded: set[str] = set()
     attempts: list[AttemptRecord] = []
     retry_count = 0
+    waited = 0.0
     preferred_provider: Provider | None = None
     start_time = time.monotonic()
     # Bounds the whole loop, so one request cannot hold the session lock for minutes.
@@ -231,6 +271,14 @@ async def execute_with_failover(
                 registry, model, excluded=frozenset(excluded), preferred_provider=preferred_provider
             )
         if candidate is None:
+            pause = await _short_wait(registry, model, waited, total_deadline)
+            if pause is not None:
+                # A key is back in a moment: wait rather than refuse. Keys that
+                # failed are still held back by their own pause markers.
+                await asyncio.sleep(pause)
+                waited += pause
+                excluded.clear()
+                continue
             raise await _exhausted(
                 registry, model, "pool_exhausted", attempts, retry_count, start_time
             )

@@ -179,8 +179,9 @@ The bootstrap key is only seeded while no *active* operator key exists. It is a 
 
 | Variable | Default | Description |
 | :--- | :--- | :--- |
-| `PALIMPSEST_RETRY_BUDGET` | `3` | Retries after the first attempt, so a request makes at most `RETRY_BUDGET + 1` provider calls. `0` disables failover (env only; the runtime API accepts 1–20). Spending it returns `budget_exhausted`. |
+| `PALIMPSEST_RETRY_BUDGET` | `3` | Retries after the first attempt, so a request makes at most `RETRY_BUDGET + 1` provider calls. `0` disables failover (env only; the runtime API accepts 1–20). Spending it returns `budget_exhausted`: a `429` when every try was a rate or quota limit, otherwise a `503`. |
 | `PALIMPSEST_COOLDOWN_SECONDS` | `60` | How long a key rests after a transient provider failure. Minimum 1. |
+| `PALIMPSEST_FAILOVER_MAX_WAIT_SECONDS` | `0` | When every key for the model is paused but one comes back within this many seconds, the request waits for it instead of answering `429`. `0` turns it off; at most 30. The wait holds the session lock, so keep it short. |
 
 ### Settlement, fairness and pool visibility
 
@@ -204,6 +205,7 @@ The settings marked *tunable* below can be changed without a restart, via `PATCH
 | `user_daily_cap` | ≥ 1, or `null` to clear the cap |
 | `request_log_prompts` | boolean |
 | `cooldown_seconds` | ≥ 1 |
+| `failover_max_wait_seconds` | 0–30 |
 | `failover_event_log_size` | 1–1000000 |
 | `request_log_ttl_hours` | 1–8760 |
 | `share_models_by_provider` | boolean; see [Model sharing and master models](#model-sharing-and-master-models) |
@@ -291,7 +293,7 @@ Three runtime settings change which model serves a request. Change them on the d
 - **`master_model`**. One model for the whole gateway. Every chat request is served by it, whatever model the client asked for, including a model nobody serves. The response `model` field names the master model. Choose it from the dropdown; the API refuses a model no key serves.
 - **`provider_master_models`**. One model per provider. A request for any model a provider's keys serve is sent to that provider's master. A provider with no master keeps the requested model. If a model is served by more than one provider, the first provider with a master decides. A model no key serves is left alone, because no provider can be named for it.
 
-`master_model` wins over `provider_master_models`. `GET /v1/models` still lists every served model. If no key serves the chosen master, requests fail with `503 pool_exhausted`.
+`master_model` wins over `provider_master_models`. `GET /v1/models` still lists every served model. If no key serves the chosen master, requests fail with `429 pool_exhausted`.
 
 ```bash
 curl -X PATCH http://localhost:8000/operator/v1/config \
@@ -368,7 +370,7 @@ The numbers above are examples, not a statement of any provider's allowance.
 - Only `daily_cap` is enforced. `token_cap` is shown on the dashboard as an indicator and never blocks a key. Tokens from streams whose provider reports none are not counted.
 - Requests made with the same key outside the gateway are not counted. The provider's own refusal still marks the key and fails over.
 - There are no per-user tiers. All accounts share `PALIMPSEST_USER_DAILY_CAP`; you can override one account until the next UTC midnight. Any account can use any served model.
-- With no capacity left, clients get `503 pool_exhausted`.
+- With no capacity left, clients get `429 pool_exhausted` with `Retry-After`. The gateway answers it before taking the session lock or charging the user's daily cap.
 
 ### Using it responsibly
 
@@ -459,8 +461,9 @@ All errors use the OpenAI envelope. Branch on `code`; treat `message` as human-f
 
 | Code | Status | Meaning |
 | :--- | :--- | :--- |
-| `pool_exhausted` | 503 | No key had routable capacity. Retry after the next reset. |
-| `budget_exhausted` | 503 | The retry budget ran out before any candidate succeeded. |
+| `pool_exhausted` | 429 | No key had routable capacity. Wait for `Retry-After`, then retry. |
+| `budget_exhausted` | 429 | The retry budget ran out and every key tried was rate-limited or out of quota. The message says how many keys were tried. Wait for `Retry-After`. |
+| `budget_exhausted` | 503 | The retry budget ran out on other failures (outages, timeouts). |
 | `provider_unavailable` | 503 | The provider call failed non-fatally and could not be recovered. |
 | `service_unavailable` | 503 | Redis was unreachable at the admission gate. |
 | `pool_unavailable` | 503 | The pool store was unreachable. |
@@ -480,7 +483,8 @@ All errors use the OpenAI envelope. Branch on `code`; treat `message` as human-f
 | `X-Request-ID` | every response | Correlates the response with the request log and settlement record. |
 | `X-Session-ID` | chat responses | The session the turn was bound to. |
 | `X-Palimpsest-Retry-Count` | failover and exhaustion errors | How many candidates were attempted. |
-| `X-Palimpsest-Next-Reset` | `pool_exhausted` | When the next key is expected to recover. |
+| `X-Palimpsest-Next-Reset` | `pool_exhausted`, `budget_exhausted` | When the next key is expected to recover. |
+| `Retry-After` | `429` responses | Seconds to wait before retrying: until a key recovers, or until the user's daily cap resets. |
 
 These carry retry counts and reset times only — never provider names, key hints or key ids.
 
@@ -609,6 +613,8 @@ The running version is shown in the dashboard's **System** section and in `GET /
 **Chat requests fail but the dashboard works** — expected without a provider key. Set `PALIMPSEST_PROVIDER_API_KEY`, or add a pool key through the Operator API. Everything else works without one.
 
 **You cannot sign in to the dashboard** — you need an operator key, not a user key. The generated one is at `docker compose exec app cat /app/.secrets/operator_key`; create your own under Accounts.
+
+**Throttled on the dashboard** — requests refused for lack of capacity (`pool_exhausted`, a rate-limited `budget_exhausted`, or a user cap) are counted as *throttled*, not as errors, and leave the error and success rates alone. A client that retries before its `Retry-After` is counted once; its further tries only add to *repeats* (Performance section).
 
 **Every request returns `pool_exhausted`** — no usable key. Check `GET /v1/operator/pool/utilization`. Keys sitting in `cooldown` or `exhausted` are skipped; resume them or add keys. If a master model is set, make sure some key still serves it.
 

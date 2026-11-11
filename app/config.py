@@ -30,6 +30,7 @@ TUNABLE_FIELDS: tuple[str, ...] = (
     "user_daily_cap",
     "request_log_prompts",
     "cooldown_seconds",
+    "failover_max_wait_seconds",
     "failover_event_log_size",
     "request_log_ttl_hours",
     "share_models_by_provider",
@@ -111,6 +112,10 @@ class Settings(BaseSettings):
 
     # Default pause after a transient provider failure, when the provider gives none.
     cooldown_seconds: int = Field(default=60, ge=1)
+
+    # When every key for a model is paused but one comes back within this many
+    # seconds, the request waits for it instead of returning 429. 0 = off.
+    failover_max_wait_seconds: int = Field(default=0, ge=0, le=30)
 
     # Retries after the first attempt: at most retry_budget + 1 provider calls.
     # 0 (no failover) is env-only; the runtime PATCH requires >= 1.
@@ -219,6 +224,7 @@ class ConfigPatch(BaseModel):
     user_daily_cap: int | None = Field(default=None, ge=1)
     request_log_prompts: bool | None = None
     cooldown_seconds: int | None = Field(default=None, ge=1)
+    failover_max_wait_seconds: int | None = Field(default=None, ge=0, le=30)
     failover_event_log_size: int | None = Field(default=None, ge=1, le=1_000_000)
     request_log_ttl_hours: int | None = Field(default=None, ge=1, le=8760)
     share_models_by_provider: bool | None = None

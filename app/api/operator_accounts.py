@@ -106,7 +106,7 @@ async def list_account_keys(
             id=key["id"],
             prefix=key["prefix"],
             created_at=key["created_at"],
-            last_used_at=key.get("last_used_at"),
+            last_used_at=key.get("last_used_at") or None,
             status=key["status"],
         )
         for key in await store.list_keys(account_id)

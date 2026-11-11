@@ -35,6 +35,8 @@ const CONFIG_FIELDS = [
     hint: 'Include current-turn messages in request logs.' },
   { name: 'cooldown_seconds', label: 'Cooldown (s)', type: 'number', min: 1, step: 1,
     hint: 'How long a key stays in cooldown after a transient failure.' },
+  { name: 'failover_max_wait_seconds', label: 'Wait for a key (s)', type: 'number', min: 0, max: 30, step: 1,
+    hint: 'When every key is rate-limited but one is back within this many seconds, wait for it instead of answering 429. 0 = off.' },
   { name: 'failover_event_log_size', label: 'Failover event log size', type: 'number', min: 1, step: 1,
     hint: 'Events retained in the bounded mirror list.' },
   { name: 'request_log_ttl_hours', label: 'Request log TTL (h)', type: 'number', min: 1, step: 1,
@@ -698,6 +700,7 @@ els.logout.addEventListener('click', () => {
   forgetKey();
   poolKeys.records = [];
   users.accounts = [];
+  forgetAccountNames();
   showLogin();
   window.location.hash = '';
 });
@@ -786,6 +789,9 @@ function visibleKeys() {
   });
 
   const column = POOL_KEY_COLUMNS.find((entry) => entry.key === poolKeys.sort.column);
+  if (!column) {
+    return filtered;
+  }
   const sign = poolKeys.sort.ascending ? 1 : -1;
   return filtered.sort((a, b) => sign * compareValues(column, recordValue(column, a), recordValue(column, b)));
 }
@@ -1083,12 +1089,49 @@ function limitRows(object) {
   }));
 }
 
-function drawProviderLimits(record, info) {
+const SYNC_FIELD_NAMES = { daily_cap: 'Request cap', used: 'Used today' };
+
+/* Provider messages may already end in a full stop; never print two. */
+function sentence(text) {
+  const trimmed = String(text).trim();
+  return /[.!?]$/.test(trimmed) ? trimmed : trimmed + '.';
+}
+
+function syncNote(sync) {
+  if (!sync) {
+    return null;
+  }
+  if (sync.status === 'updated') {
+    const fields = (sync.changes || []).map(
+      (c) => (SYNC_FIELD_NAMES[c.field] || c.field) + ' ' + c.local + ' → ' + c.provider
+    );
+    return { kind: 'ok', text: 'Synced with the provider: ' + fields.join(', ') + '.' };
+  }
+  if (sync.status === 'ok') {
+    return { kind: 'ok', text: 'Local cap and used count already match the provider.' };
+  }
+  if (sync.status === 'error') {
+    return {
+      kind: 'error',
+      text: 'Sync failed: ' + sentence(sync.error || 'the provider could not be asked') + ' Nothing changed.',
+    };
+  }
+  return null;
+}
+
+function drawProviderLimits(record, info, sync) {
   const columns = [
     { label: 'Field', cell: (row) => row.name },
     { label: 'Value', cell: (row) => row.value },
   ];
   const parts = [];
+
+  const note = syncNote(sync);
+  if (note) {
+    const banner = el('p', 'sync-note sync-note--' + note.kind, note.text);
+    banner.setAttribute('role', 'status');
+    parts.push(banner);
+  }
 
   parts.push(el('h4', null, 'Reported now by the provider'));
   if (info.live) {
@@ -1127,158 +1170,147 @@ function drawProviderLimits(record, info) {
 async function showProviderLimits(record) {
   poolKeys.panel.report('Asking the provider…', 'pending');
   poolKeys.panel.run(
-    () => apiFetch(keyActionPath(record.id, '/provider-limits')),
-    (info) => {
+    async () => {
+      const info = await apiFetch(keyActionPath(record.id, '/provider-limits'));
+      let sync = null;
+      /* Only sync when the provider just answered: if it could not be reached a
+         second call would fail the same way, and the error is already shown. */
+      if (info.live_supported && info.live) {
+        try {
+          sync = await apiFetch(keyActionPath(record.id, '/sync-limits'), { method: 'POST' });
+        } catch (err) {
+          if (err instanceof SignedOut) {
+            throw err;
+          }
+          sync = { status: 'error', error: err.message };
+        }
+      }
+      return { info, sync };
+    },
+    async ({ info, sync }) => {
       poolKeys.panel.report('', 'ok');
-      drawProviderLimits(record, info);
+      drawProviderLimits(record, info, sync);
+      if (sync && sync.applied) {
+        // The cap and used count changed server-side: refresh the cached rows.
+        try {
+          poolKeys.records = await apiFetch(POOL_KEYS_PATH);
+        } catch (err) {
+          /* The table keeps its previous numbers until the next refresh. */
+        }
+        drawPoolKeysTable();
+      }
     }
   );
 }
 
-async function drawPoolKeysTable() {
+function drawPoolKeysTable() {
   const body = poolKeys.body;
   if (!body) {
     return;
   }
   
-  // Show loading state
-  body.replaceChildren(el('p', 'note', 'Loading...'));
-  
-  try {
-    // Fetch all keys (we'll paginate on the client side)
-    // Build query parameters for filtering and sorting
-    const params = new URLSearchParams();
-    
-    // Add filters
-    if (poolKeys.filters.state) {
-      params.append('state', poolKeys.filters.state);
-    }
-    if (poolKeys.filters.provider) {
-      params.append('provider', poolKeys.filters.provider);
-    }
-    if (poolKeys.filters.query) {
-      params.append('search', poolKeys.filters.query);
-    }
-    
-    // Note: The API doesn't support offset-based pagination, so we fetch all and paginate client-side
-    // For sorting, we'll also need to do it client-side since the API sorting might not work with our pagination
-    const records = await apiFetch(POOL_KEYS_PATH + '?' + params.toString());
-    poolKeys.records = records || [];
-    
-    // Apply sorting client-side
-    if (poolKeys.sort.column) {
-      const column = POOL_KEY_COLUMNS.find(col => col.key === poolKeys.sort.column);
-      if (column) {
-        poolKeys.records.sort((a, b) => {
-          const valA = recordValue(column, a);
-          const valB = recordValue(column, b);
-          return poolKeys.sort.ascending 
-            ? compareValues(column, valA, valB) 
-            : -compareValues(column, valA, valB);
-        });
-      }
-    }
-    
-    const totalRecords = poolKeys.records.length;
-    const paginatedRecords = pageOf(poolKeys.pager, poolKeys.records);
-    
-    if (!paginatedRecords.length) {
-      body.replaceChildren(
-        totalRecords
-          ? emptyState('No keys match the current filters.')
-          : emptyState(
-            'No provider keys yet. Add one to start routing requests.',
-            '+ Add your first key',
-            openAddKey
-          )
-      );
-      return;
-    }
-    
-    const head = el('thead');
-    const headRow = el('tr');
-    for (const column of POOL_KEY_COLUMNS) {
-      const th = el('th', null);
-      th.scope = 'col';
-      const active = poolKeys.sort.column === column.key;
-      if (active) {
-        th.setAttribute('aria-sort', poolKeys.sort.ascending ? 'ascending' : 'descending');
-      }
-      const button = el(
-        'button',
-        'sort-button',
-        column.label + (active ? (poolKeys.sort.ascending ? ' ▲' : ' ▼') : '')
-      );
-      button.type = 'button';
-      button.addEventListener('click', () => sortBy(column.key));
-      th.append(button);
-      headRow.append(th);
-    }
-    const actionsHead = el('th', 'actions-col', 'Actions');
-    actionsHead.scope = 'col';
-    headRow.append(actionsHead);
-    head.append(headRow);
-    
-    const rowFor = (record) => {
-      const tr = el('tr');
-      for (const column of POOL_KEY_COLUMNS) {
-        const cell = el('td');
-        if (column.key === 'state') {
-          cell.append(el('span', 'badge badge--' + record.state, STATE_LABELS[record.state] || record.state));
-        } else {
-          const formatted = formatCell(column, record);
-          if (column.key === 'models') {
-            // One line: first model, "+N" for the rest, full list on hover.
-            const list = record.models || [];
-            cell.classList.add('models-column');
-            cell.append(el('span', 'models-text', list.length ? list[0] : formatted));
-            if (list.length > 1) {
-              cell.append(el('span', 'models-more', '+' + (list.length - 1)));
-            }
-            cell.title = list.join('\n');
-            if (list.length) {
-              const copy = el('button', 'models-copy', 'Copy');
-              copy.type = 'button';
-              copy.title = 'Copy all model names';
-              copy.addEventListener('click', (event) => {
-                event.stopPropagation();
-                navigator.clipboard.writeText(list.join(', ')).then(() => {
-                  copy.textContent = 'Copied';
-                  setTimeout(() => { copy.textContent = 'Copy'; }, 1200);
-                });
-              });
-              cell.append(copy);
-            }
-          } else {
-            cell.textContent = formatted;
-          }
-        }
-        tr.append(cell);
-      }
-      tr.append(rowActionCell(record));
-      return tr;
-    };
-    
-    const tbody = el('tbody');
-    appendGrouped(
-      tbody,
-      paginatedRecords,
-      keyGrouping(poolKeys.group, (members) => {
-        const available = members.filter((key) => key.state === 'active').length;
-        return plural(members.length, 'key') + ' · ' + available + ' available';
-      }),
-      rowFor,
-      POOL_KEY_COLUMNS.length + 1
-    );
-    
+  /* Filtering and sorting run over the already-fetched list (the list endpoint
+     takes no filter parameters), so redrawing never issues a request. */
+  const visible = visibleKeys();
+  const totalRecords = visible.length;
+  const paginatedRecords = pageOf(poolKeys.pager, visible);
+
+  if (!paginatedRecords.length) {
     body.replaceChildren(
-      ...withPager(tableOf(head, tbody), pagerBar(poolKeys.pager, totalRecords, 'key', drawPoolKeysTable))
+      poolKeys.records.length
+        ? emptyState('No keys match the current filters.')
+        : emptyState(
+          'No provider keys yet. Add one to start routing requests.',
+          '+ Add your first key',
+          openAddKey
+        )
     );
-  } catch (err) {
-    if (!(err instanceof SignedOut)) {
-      body.replaceChildren(el('p', 'note', 'Error loading keys: ' + err.message));
-    }
+    return;
   }
+
+  const head = el('thead');
+  const headRow = el('tr');
+  for (const column of POOL_KEY_COLUMNS) {
+    const th = el('th', null);
+    th.scope = 'col';
+    const active = poolKeys.sort.column === column.key;
+    if (active) {
+      th.setAttribute('aria-sort', poolKeys.sort.ascending ? 'ascending' : 'descending');
+    }
+    const button = el(
+      'button',
+      'sort-button',
+      column.label + (active ? (poolKeys.sort.ascending ? ' ▲' : ' ▼') : '')
+    );
+    button.type = 'button';
+    button.addEventListener('click', () => sortBy(column.key));
+    th.append(button);
+    headRow.append(th);
+  }
+  const actionsHead = el('th', 'actions-col', 'Actions');
+  actionsHead.scope = 'col';
+  headRow.append(actionsHead);
+  head.append(headRow);
+
+  const rowFor = (record) => {
+    const tr = el('tr');
+    for (const column of POOL_KEY_COLUMNS) {
+      const cell = el('td');
+      if (column.key === 'state') {
+        cell.append(el('span', 'badge badge--' + record.state, STATE_LABELS[record.state] || record.state));
+      } else {
+        const formatted = formatCell(column, record);
+        if (column.key === 'models') {
+          // One line: first model, "+N" for the rest, full list on hover.
+          const list = record.models || [];
+          cell.classList.add('models-column');
+          cell.append(el('span', 'models-text', list.length ? list[0] : formatted));
+          if (list.length > 1) {
+            cell.append(el('span', 'models-more', '+' + (list.length - 1)));
+          }
+          cell.title = list.join('\n');
+          if (list.length) {
+            const copy = el('button', 'models-copy', 'Copy');
+            copy.type = 'button';
+            copy.title = 'Copy all model names';
+            copy.addEventListener('click', (event) => {
+              event.stopPropagation();
+              navigator.clipboard.writeText(list.join(', ')).then(() => {
+                copy.textContent = 'Copied';
+                setTimeout(() => { copy.textContent = 'Copy'; }, 1200);
+              });
+            });
+            cell.append(copy);
+          }
+        } else if (column.key === 'last_modified_by' && record.last_modified_by) {
+          // Operator ids are long UUIDs: show the short form, the full id on hover.
+          cell.textContent = shortId(record.last_modified_by);
+          cell.title = record.last_modified_by;
+        } else {
+          cell.textContent = formatted;
+        }
+      }
+      tr.append(cell);
+    }
+    tr.append(rowActionCell(record));
+    return tr;
+  };
+
+  const tbody = el('tbody');
+  appendGrouped(
+    tbody,
+    paginatedRecords,
+    keyGrouping(poolKeys.group, (members) => {
+      const available = members.filter((key) => key.state === 'active').length;
+      return plural(members.length, 'key') + ' · ' + available + ' available';
+    }),
+    rowFor,
+    POOL_KEY_COLUMNS.length + 1
+  );
+
+  body.replaceChildren(
+    ...withPager(tableOf(head, tbody), pagerBar(poolKeys.pager, totalRecords, 'key', drawPoolKeysTable))
+  );
 }
 
 function drawOptions(select, values, selected, labels = {}) {
@@ -1306,20 +1338,20 @@ function buildFilters() {
   const stateSelect = el('select');
   stateSelect.id = 'filter-state';
   drawFilterOptions(stateSelect, KEY_STATES, poolKeys.filters.state, STATE_LABELS);
-stateSelect.addEventListener('change', () => {
+  stateSelect.addEventListener('change', () => {
     poolKeys.filters.state = stateSelect.value;
-    poolKeys.pager.page = 1; // Reset to first page when filters change
+    poolKeys.pager.page = 1;
     drawPoolKeysTable();
-});
+  });
 
   const providerSelect = el('select');
   providerSelect.id = 'filter-provider';
   drawFilterOptions(providerSelect, PROVIDERS, poolKeys.filters.provider, PROVIDER_NAMES);
-providerSelect.addEventListener('change', () => {
+  providerSelect.addEventListener('change', () => {
     poolKeys.filters.provider = providerSelect.value;
-    poolKeys.pager.page = 1; // Reset to first page when filters change
+    poolKeys.pager.page = 1;
     drawPoolKeysTable();
-});
+  });
 
   const search = el('input', 'search');
   search.type = 'search';
@@ -1328,6 +1360,7 @@ providerSelect.addEventListener('change', () => {
   search.value = poolKeys.filters.query;
   search.addEventListener('input', () => {
     poolKeys.filters.query = search.value;
+    poolKeys.pager.page = 1;
     drawPoolKeysTable();
   });
 
@@ -2209,6 +2242,8 @@ function drawUnavailableModels() {
 const OUTCOME_TONES = {
   success: 'active',
   exhausted_503: 'cooldown',
+  exhausted_429: 'cooldown',
+  rejected_user_cap: 'cooldown',
   error_5xx: 'exhausted',
   error_4xx: 'suspended',
 };
@@ -2717,7 +2752,7 @@ async function showAccountKeys(account) {
             el('td', null, key.prefix),
             status,
             el('td', null, formatDate(key.created_at)),
-            el('td', null, key.last_used_at ? formatDate(key.last_used_at) : '—')
+            el('td', null, key.last_used_at ? formatDate(key.last_used_at) : 'Never')
           );
           tbody.append(tr);
         }
@@ -2730,6 +2765,7 @@ async function showAccountKeys(account) {
 }
 
 async function loadAccounts() {
+  forgetAccountNames();
   users.accounts = await apiFetch(ACCOUNTS_PATH);
   users.panel.report(
     users.accounts.length + ' account(s), ' +
@@ -2777,12 +2813,35 @@ const REQUESTS_PATH = '/operator/v1/requests';
 
 const accountNames = {};
 
-async function loadAccountNames() {
-  const accounts = await apiFetch(ACCOUNTS_PATH);
-  for (const account of accounts) {
-    accountNames[account.id] = account.display_name || '(unnamed) ' + shortId(account.id);
+/* Several sections ask for the account list at once (and Requests twice per
+   load). Callers within a few seconds share one request; the Users section,
+   which creates and deletes accounts, always drops the shared copy. */
+const ACCOUNT_NAMES_TTL_MS = 10000;
+let accountNamesLoad = null;
+let accountNamesAt = 0;
+
+function forgetAccountNames() {
+  accountNamesLoad = null;
+}
+
+function loadAccountNames() {
+  if (accountNamesLoad && Date.now() - accountNamesAt < ACCOUNT_NAMES_TTL_MS) {
+    return accountNamesLoad;
   }
-  return accounts;
+  accountNamesAt = Date.now();
+  accountNamesLoad = apiFetch(ACCOUNTS_PATH).then(
+    (accounts) => {
+      for (const account of accounts) {
+        accountNames[account.id] = account.display_name || '(unnamed) ' + shortId(account.id);
+      }
+      return accounts;
+    },
+    (err) => {
+      accountNamesLoad = null;
+      throw err;
+    }
+  );
+  return accountNamesLoad;
 }
 
 function accountLabel(id) {

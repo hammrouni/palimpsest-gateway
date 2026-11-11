@@ -56,7 +56,7 @@ flowchart LR
     P -->|answer| OK["Save the turn, meter the key,<br/>return the answer"]
     P -->|"rate limit / outage /<br/>bad key"| F["Rest, exhaust or suspend<br/>that key"]
     F -->|"retries left"| K
-    F -->|"no key left"| X["503 pool_exhausted<br/>with a Retry-After hint"]
+    F -->|"no key left"| X["429 pool_exhausted<br/>with a Retry-After hint"]
 ```
 
 1. **Authenticate.** The app sends its own gateway API key (`pgw_live_...`), never a provider key.
@@ -283,7 +283,7 @@ The consequence is useful: **give limited keys a cap and leave unlimited keys un
 - **Caps are yours to set.** The gateway does not know a provider's allowance, so a cap is only as right as the number you enter. Allowances change; check the provider's current limits. For OpenRouter keys the dashboard can show the provider's own view of the key's remaining free requests.
 - **The request cap is enforced; the token budget is not.** `daily_cap` stops a key from being picked. `token_cap` is an indicator on the dashboard and never blocks a key.
 - **Usage outside the gateway is invisible to the gateway.** If a key is also used elsewhere, the gateway's count is a floor. The provider's own refusal (rate limit, quota) still triggers failover.
-- **Free tiers are small and can change.** Expect `503 pool_exhausted` when every free key is spent and no backstop exists. The response carries `Retry-After` and `X-Palimpsest-Next-Reset` where a reset time is known.
+- **Free tiers are small and can change.** Expect `429 pool_exhausted` when every free key is spent and no backstop exists. The response carries `Retry-After` and `X-Palimpsest-Next-Reset` where a reset time is known.
 - **Per-user limits are account-wide.** Every account shares the same daily request cap, which you can override for one account until the next UTC midnight. There is no per-user model or key restriction; an account can use any model the pool serves. If different groups need different keys, run separate gateways.
 - **Free tiers may handle prompts differently.** Some providers use free-tier traffic to improve their products, or log it. Read each provider's terms before sending anything private through a free key.
 
@@ -310,7 +310,8 @@ Everything is configured through `PALIMPSEST_*` environment variables. The full 
 | `PALIMPSEST_PROVIDER_TIMEOUT` | `60` | Seconds per provider attempt. |
 | `PALIMPSEST_ALLOW_SIGNUP` | `true` | Self-service `POST /v1/accounts`. Set `false` on any reachable gateway: then only an operator key can create accounts. |
 | `PALIMPSEST_REDIS_URL` | `redis://redis:6379/0` | Store location (Compose default). |
-| `PALIMPSEST_RETRY_BUDGET` | `3` | Retries after the first attempt (so at most 4 provider calls). Spending it returns `budget_exhausted`. |
+| `PALIMPSEST_RETRY_BUDGET` | `3` | Retries after the first attempt (so at most 4 provider calls). Spending it returns `budget_exhausted` (`429` if every try was rate-limited, else `503`). |
+| `PALIMPSEST_FAILOVER_MAX_WAIT_SECONDS` | `0` | Wait up to this many seconds for a rate-limited key to come back instead of answering `429`. `0` = off. |
 | `PALIMPSEST_COOLDOWN_SECONDS` | `60` | How long a key rests after a transient failure. |
 | `PALIMPSEST_VERBATIM_TURNS_N` | `4` | Recent turns re-sent verbatim when a provider fails over. |
 | `PALIMPSEST_USER_DAILY_CAP` | - | Per-user daily request cap. Unset = no per-user cap. |

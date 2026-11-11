@@ -50,7 +50,7 @@ async def list_keys(
                 id=k["id"],
                 prefix=k["prefix"],
                 created_at=k["created_at"],
-                last_used_at=k.get("last_used_at"),
+                last_used_at=k.get("last_used_at") or None,
                 status=k["status"],
             )
             for k in keys
