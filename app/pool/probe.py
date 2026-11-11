@@ -32,7 +32,7 @@ _ADVICE = {
     "ok": "The key answered a real request.",
     "key_rejected": "The provider refused this key. Check it is correct, active and allowed to use this model.",
     "model_not_found": "The provider does not offer this model to this key. Pick another model or check its name.",
-    "no_credits": "The key works but the account is out of credits or quota.",
+    "no_credits": "The key is valid but this model needs a paid balance or resource package. Try one of the provider’s free models.",
     "rate_limited": "The key works but is being rate-limited right now. Try again shortly.",
     "unreachable": "The gateway could not reach the endpoint. Check the base URL and that the server is running.",
     "timeout": "The provider did not answer in time.",
@@ -42,10 +42,20 @@ _ADVICE = {
 }
 
 
+# Some providers answer a model that has no paid balance or package with a 429 that
+# reads like a rate limit. It is a billing problem, and waiting will not fix it.
+_NO_BALANCE = re.compile(
+    r"(?i)(insufficient (balance|funds|credits?)|no resource package|please recharge|"
+    r"out of credits|top up)"
+)
+
+
 def _verdict(error: ProviderAttemptError) -> str:
     """One word for why the test failed, from the same rules live traffic follows."""
     if is_connectivity_error(error):
         return "unreachable"
+    if _NO_BALANCE.search(error.message or ""):
+        return "no_credits"
     message = (error.message or "").lower()
     if error.code == "timeout" or "timed out" in message or "timeout" in message:
         return "timeout"
@@ -151,3 +161,43 @@ async def probe_key(
         or None,
     )
     return result
+
+
+MAX_MODELS_PER_RUN = 30
+_PROBE_CONCURRENCY = 3
+
+
+async def probe_models(registry: PoolRegistry, key_id: str) -> dict[str, Any]:
+    """Test every model of a key (a few at a time) and say which ones work.
+
+    This is how an operator finds out which of a provider's models a key may really
+    use: a provider's list names what exists, not what a given account can call
+    (a model may need a paid balance, a plan or an allow-list). Each model costs one
+    tiny request; a refused one costs nothing. Returns the per-model results in the
+    key's own order plus the lists of working and failing models.
+
+    Raises ``KeyNotFoundError`` for an unknown key and ``ValueError`` when the key
+    lists more than ``MAX_MODELS_PER_RUN`` models.
+    """
+    record = await registry.get(key_id)
+    if record is None:
+        raise KeyNotFoundError(key_id)
+    if len(record.models) > MAX_MODELS_PER_RUN:
+        raise ValueError(
+            f"this key lists {len(record.models)} models; test at most {MAX_MODELS_PER_RUN} at once"
+        )
+
+    gate = asyncio.Semaphore(_PROBE_CONCURRENCY)
+
+    async def one(model: str) -> dict[str, Any]:
+        async with gate:
+            return await probe_key(registry, key_id, model)
+
+    results = await asyncio.gather(*(one(model) for model in record.models))
+    return {
+        "key_id": key_id,
+        "provider": record.provider.value,
+        "results": results,
+        "working": [r["model"] for r in results if r["ok"]],
+        "failing": [r["model"] for r in results if not r["ok"]],
+    }

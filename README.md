@@ -363,6 +363,7 @@ Send `X-Session-ID` on every request in a conversation. Omit it and the gateway 
 | `/v1/operator/pool/keys/{key_id}/suspend` | `POST` | Suspend a key from selection. |
 | `/v1/operator/pool/keys/{key_id}/resume` | `POST` | Return a suspended key to selection. |
 | `/v1/operator/pool/keys/{key_id}/test` | `POST` | Send one tiny request through a key and report whether it answered (`verdict`, latency, reply). Changes no state and counts no usage. |
+| `/v1/operator/pool/keys/{key_id}/test-models` | `POST` | Test every model of a key (up to 30, three at a time) and list which ones answer, to find the models the account can really use. |
 | `/v1/operator/pool/keys/{key_id}/provider-limits` | `GET` | The provider's rate-limit view of a key. |
 | `/v1/operator/pool/keys/{key_id}/sync-limits` | `POST` | Check one OpenRouter key against OpenRouter and correct its local cap and used count. `?apply=false` only reports. |
 | `/v1/operator/pool/sync-limits` | `POST` | The same check for every OpenRouter key. |

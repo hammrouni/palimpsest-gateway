@@ -748,6 +748,14 @@ function recordValue(column, record) {
   return column.key === 'name' ? keyName(record) : record[column.key];
 }
 
+function hostOf(url) {
+  try {
+    return new URL(url).host;
+  } catch (err) {
+    return url;
+  }
+}
+
 function formatCell(column, record) {
   const value = recordValue(column, record);
   if (value === null || value === undefined || value === '') {
@@ -757,7 +765,10 @@ function formatCell(column, record) {
     return formatDate(value);
   }
   if (column.key === 'provider') {
-    return PROVIDER_NAMES[value] || String(value);
+    const name = PROVIDER_NAMES[value] || String(value);
+    // A key sent to its own endpoint says where, so a "custom" setup is easy to spot
+    // even when it was added under another provider.
+    return record.base_url ? name + ' · ' + hostOf(record.base_url) : name;
   }
   if (Array.isArray(value)) {
     return value.join(', ');
@@ -766,7 +777,7 @@ function formatCell(column, record) {
 }
 
 function searchableText(record) {
-  return [keyName(record), record.id, record.provider, record.key_hint, record.state, (record.models || []).join(' ')]
+  return [keyName(record), record.id, record.provider, record.base_url || '', record.key_hint, record.state, (record.models || []).join(' ')]
     .join(' ')
     .toLowerCase();
 }
@@ -1167,6 +1178,47 @@ function drawTestResult(box, result) {
   );
 }
 
+/* The result of testing every model of a key: which ones answer. A provider's model
+   list says what exists, not what this account may call, so this is how to find out
+   (and to drop the rest). */
+function drawModelsResult(box, record, outcome, keepWorking) {
+  const rows = outcome.results.map((row) => ({
+    model: row.model,
+    ok: row.ok,
+    result:
+      (row.ok ? '✓ works' : '✗ ' + (TEST_VERDICT_TITLES[row.verdict] || 'failed')) +
+      (row.latency_ms !== null && row.latency_ms !== undefined ? ' · ' + row.latency_ms + ' ms' : ''),
+    detail: row.ok ? '' : row.detail || '',
+  }));
+  const working = outcome.working.length;
+  const failing = outcome.failing.length;
+  const summary = el(
+    'p',
+    'sync-note sync-note--' + (failing === 0 ? 'ok' : working === 0 ? 'error' : 'warn'),
+    working + ' of ' + rows.length + ' models answered' + (failing ? ' · ' + failing + ' did not' : '')
+  );
+  summary.setAttribute('role', 'status');
+  const parts = [
+    summary,
+    dataTable(
+      [
+        { label: 'Model', cell: (row) => row.model },
+        { label: 'Result', cell: (row) => row.result },
+        { label: 'Provider said', cell: (row) => row.detail },
+      ],
+      rows,
+      ''
+    ),
+  ];
+  if (working && failing) {
+    const keep = button('Keep only the ' + working + ' working model' + (working === 1 ? '' : 's'), 'primary', () =>
+      keepWorking(outcome.working)
+    );
+    parts.push(el('p', 'note', 'Removes the models that did not answer from this key, so requests are never sent to them.'), keep);
+  }
+  box.replaceChildren(...parts);
+}
+
 function showTestKey(record) {
   const box = el('div', 'test-result');
   const models = record.models || [];
@@ -1180,6 +1232,9 @@ function showTestKey(record) {
   const run = () => {
     handle.primaryButton.disabled = true;
     picker.disabled = true;
+    if (models.length > 1) {
+      testAll.disabled = true;
+    }
     box.replaceChildren(el('p', 'note', 'Sending one small request to ' + picker.value + '…'));
     handle.status.run(
       () =>
@@ -1194,9 +1249,58 @@ function showTestKey(record) {
       if (handle.primaryButton) {
         handle.primaryButton.disabled = false;
         picker.disabled = false;
+        if (models.length > 1) {
+          testAll.disabled = false;
+        }
       }
     });
   };
+
+  const keepWorking = async (working) => {
+    const confirmed = await confirmAction({
+      title: 'Keep only the working models?',
+      message:
+        'This key will serve only: ' + working.join(', ') +
+        '. The other models are removed from it. You can add them back with Edit.',
+      confirmLabel: 'Keep working models',
+    });
+    if (!confirmed) {
+      return;
+    }
+    poolKeys.panel.run(async () => {
+      const updated = await apiFetch(keyActionPath(record.id, ''), {
+        method: 'PATCH',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ models: working }),
+      });
+      replaceRecord(updated);
+      closeModal();
+      poolKeys.panel.report(keyName(updated) + ' now serves ' + working.length + ' working model(s).', 'ok');
+    }, drawPoolKeysTable, afterKeyActionError);
+  };
+
+  const runAll = () => {
+    handle.primaryButton.disabled = true;
+    testAll.disabled = true;
+    picker.disabled = true;
+    box.replaceChildren(
+      el('p', 'note', 'Testing ' + models.length + ' models, a few at a time. This takes a few seconds…')
+    );
+    handle.status.run(
+      () => apiFetch(keyActionPath(record.id, '/test-models'), { method: 'POST' }),
+      (outcome) => drawModelsResult(box, record, outcome, keepWorking),
+      (err) => box.replaceChildren(el('p', 'note', 'The test could not run: ' + err.message))
+    ).finally(() => {
+      if (handle.primaryButton) {
+        handle.primaryButton.disabled = false;
+        testAll.disabled = false;
+        picker.disabled = false;
+      }
+    });
+  };
+
+  const testAll = button('Test all ' + models.length + ' models', 'ghost', runAll);
+  testAll.title = 'One tiny request per model, to see which ones this key can really use';
 
   const handle = openModal({
     title: 'Test ' + keyName(record),
@@ -1206,7 +1310,7 @@ function showTestKey(record) {
         'note',
         'Sends one tiny real request (a few tokens) through this key. Nothing is counted against its quota in the dashboard and its state does not change.'
       ),
-      ...(models.length > 1 ? [labelled('Model', picker)] : []),
+      ...(models.length > 1 ? [labelled('Model', picker), testAll] : []),
       box,
     ],
     primary: { label: 'Run again', onClick: run },

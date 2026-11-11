@@ -128,7 +128,15 @@ class KeyNotFoundError(Exception):
 
 
 class DuplicateKeyError(Exception):
-    """Raised on add when the same key material is already in the pool."""
+    """Raised on add when the same key material is already in the pool.
+
+    ``existing`` is the record already holding it (None if it vanished meanwhile),
+    so the caller can tell the operator where to find it.
+    """
+
+    def __init__(self, digest: str, existing: KeyRecord | None = None):
+        self.existing = existing
+        super().__init__(digest)
 
 
 def _require_valid_id(key_id: str) -> None:
@@ -163,7 +171,9 @@ class PoolRegistry:
 
         claimed = await self.redis.set(_digest_key(digest), key_id, nx=True)
         if not claimed:
-            raise DuplicateKeyError(digest)
+            holder = await self.redis.get(_digest_key(digest))
+            holder = holder.decode() if isinstance(holder, bytes) else holder
+            raise DuplicateKeyError(digest, await self.get(holder) if holder else None)
 
         record = {
             "id": key_id,

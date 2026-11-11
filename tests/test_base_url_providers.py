@@ -328,3 +328,38 @@ async def test_api_says_why_a_base_url_was_refused(
         KEYS, headers=operator_headers, json={"provider": "openai", "models": [], "key": "k"}
     )
     assert other.json()["error"]["message"] == "Invalid request."
+
+
+@pytest.mark.asyncio
+async def test_duplicate_says_where_the_existing_key_is(
+    async_client: AsyncClient, operator_headers: dict[str, str]
+):
+    first = await async_client.post(
+        KEYS, headers=operator_headers,
+        json={"provider": "openai", "models": ["m"], "key": "sk-same-material-1234",
+              "base_url": "https://api.aionlabs.ai/v1"},
+    )
+    assert first.status_code == 201
+
+    # Added again, this time as a custom provider: the usual way a key seems "missing".
+    again = await async_client.post(
+        KEYS, headers=operator_headers,
+        json={"provider": "custom", "models": ["m"], "key": "sk-same-material-1234",
+              "base_url": "https://api.aionlabs.ai/v1"},
+    )
+    assert again.status_code == 409
+    message = again.json()["error"]["message"]
+    assert "already in the pool" in message
+    assert "openai" in message and "api.aionlabs.ai" in message
+    assert "1234" in message  # the hint names the entry...
+    assert "sk-same-material-1234" not in message  # ...the key itself is never shown
+
+    labelled = await async_client.post(
+        KEYS, headers=operator_headers,
+        json={"provider": "groq", "models": ["m"], "key": "gsk-labelled-0001", "label": "Main"},
+    )
+    dup = await async_client.post(
+        KEYS, headers=operator_headers,
+        json={"provider": "groq", "models": ["m"], "key": "gsk-labelled-0001"},
+    )
+    assert labelled.status_code == 201 and "'Main'" in dup.json()["error"]["message"]

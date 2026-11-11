@@ -65,6 +65,7 @@ _API_PATHS = {
     "/v1/operator/pool/keys/{key_id}/provider-limits",
     "/v1/operator/pool/keys/{key_id}/sync-limits",
     "/v1/operator/pool/keys/{key_id}/test",
+    "/v1/operator/pool/keys/{key_id}/test-models",
     "/v1/operator/pool/keys/{key_id}/resume",
     "/v1/operator/pool/keys/{key_id}/suspend",
     "/v1/operator/pool/sync-limits",

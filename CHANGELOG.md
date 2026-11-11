@@ -13,6 +13,13 @@ drift. The running version is shown in the dashboard's **System** section and in
 ## [Unreleased]
 
 ### Added
+- Test all models: the Test dialog can test every model of a key (a tiny request each,
+  three at a time, up to 30) and show which ones answer, then **Keep only the working
+  models**. A provider's list names what exists, not what an account may call; this
+  finds out without the gateway knowing anything provider-specific. `POST
+  /v1/operator/pool/keys/{key_id}/test-models`, audited as `pool_key.test_models`.
+- Test reports a billing refusal phrased as a 429 ("Insufficient balance", "no
+  resource package") as out of credits instead of a rate limit.
 - Test button on every pool key: sends one tiny real request through the key (same
   endpoint and model mapping as live traffic) and shows whether it answered, how
   fast, and a plain verdict (key refused, model not found, out of credits,

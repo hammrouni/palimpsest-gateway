@@ -252,3 +252,112 @@ async def test_litellm_class_names_are_stripped_from_the_detail(registry, monkey
         _failure(401, "litellm.AuthenticationError: AuthenticationError: OpenAIException - Incorrect API key"),
     )
     assert (await probe_key(registry, record.id))["detail"] == "Incorrect API key"
+
+
+@pytest.mark.asyncio
+async def test_a_no_balance_429_is_a_billing_verdict_not_a_rate_limit(registry, monkeypatch):
+    """Z.ai answers a paid model with 429 'Insufficient balance or no resource package'."""
+    record = await _add(registry, provider=Provider.ZAI, models=("glm-5",))
+    _script(monkeypatch, _failure(429, "Insufficient balance or no resource package. Please recharge."))
+
+    result = await probe_key(registry, record.id)
+
+    assert result["verdict"] == "no_credits"
+    assert "free models" in result["message"]
+    assert result["status_code"] == 429
+
+
+# -- testing every model of a key ---------------------------------------------------
+
+
+def _per_model(monkeypatch, outcomes: dict):
+    seen = []
+
+    async def fake(registry, key_id, model, messages, **params):
+        seen.append(model)
+        return outcomes[model]
+
+    monkeypatch.setattr(probe_module, "attempt", fake)
+    return seen
+
+
+@pytest.mark.asyncio
+async def test_testing_all_models_says_which_ones_work(registry, monkeypatch):
+    record = await _add(registry, models=("free-a", "paid-b", "free-c", "gone-d"))
+    seen = _per_model(
+        monkeypatch,
+        {
+            "free-a": _answer(),
+            "paid-b": _failure(429, "Insufficient balance or no resource package"),
+            "free-c": _answer(),
+            "gone-d": _failure(404, "model not found"),
+        },
+    )
+
+    out = await probe_module.probe_models(registry, record.id)
+
+    assert sorted(seen) == ["free-a", "free-c", "gone-d", "paid-b"]
+    assert [r["model"] for r in out["results"]] == ["free-a", "paid-b", "free-c", "gone-d"]
+    assert out["working"] == ["free-a", "free-c"]
+    assert out["failing"] == ["paid-b", "gone-d"]
+    assert [r["verdict"] for r in out["results"]] == ["ok", "no_credits", "ok", "model_not_found"]
+    # Like a single test, it changes nothing about the key.
+    assert await registry.effective_state(record.id) == KeyState.ACTIVE
+
+
+@pytest.mark.asyncio
+async def test_testing_all_models_runs_a_few_at_a_time(registry, monkeypatch):
+    models = tuple(f"m{i}" for i in range(9))
+    record = await _add(registry, models=models)
+    running = peak = 0
+
+    async def slow(registry, key_id, model, messages, **params):
+        nonlocal running, peak
+        running += 1
+        peak = max(peak, running)
+        await asyncio.sleep(0.01)
+        running -= 1
+        return _answer()
+
+    monkeypatch.setattr(probe_module, "attempt", slow)
+    out = await probe_module.probe_models(registry, record.id)
+
+    assert len(out["working"]) == 9
+    assert 1 < peak <= probe_module._PROBE_CONCURRENCY
+
+
+@pytest.mark.asyncio
+async def test_testing_all_models_refuses_a_huge_list(registry, monkeypatch):
+    record = await _add(
+        registry, models=tuple(f"m{i}" for i in range(probe_module.MAX_MODELS_PER_RUN + 1))
+    )
+    seen = _per_model(monkeypatch, {})
+    with pytest.raises(ValueError, match="at most"):
+        await probe_module.probe_models(registry, record.id)
+    assert seen == []  # nothing was sent
+
+    with pytest.raises(KeyNotFoundError):
+        await probe_module.probe_models(registry, "does-not-exist")
+
+
+@pytest.mark.asyncio
+async def test_api_tests_all_models_and_audits_it(
+    async_client: AsyncClient, operator_headers: dict[str, str], monkeypatch
+):
+    key_id = (
+        await async_client.post(
+            KEYS, headers=operator_headers,
+            json={"provider": "openai", "models": ["good", "bad"], "key": "sk-api-0009"},
+        )
+    ).json()["id"]
+    _per_model(monkeypatch, {"good": _answer(), "bad": _failure(401, "nope")})
+
+    resp = await async_client.post(f"{KEYS}/{key_id}/test-models", headers=operator_headers)
+    assert resp.status_code == 200
+    assert resp.json()["working"] == ["good"] and resp.json()["failing"] == ["bad"]
+
+    audit = await async_client.get("/operator/v1/audit", headers=operator_headers)
+    rows = audit.json().get("data", audit.json())
+    assert any(r["action"] == "pool_key.test_models" for r in rows)
+
+    assert (await async_client.post(f"{KEYS}/nope/test-models", headers=operator_headers)).status_code == 404

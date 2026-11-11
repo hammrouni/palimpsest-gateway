@@ -21,7 +21,7 @@ from app.pool.events import recent_failover_events
 from app.pool.limit_sync import sync_all, sync_key
 from app.pool.limits import LiveLimitsError, get_observed, live_limits
 from app.pool.models import KeyCreate, KeyUpdate, Provider
-from app.pool.probe import probe_key
+from app.pool.probe import probe_key, probe_models
 from app.pool.registry import DuplicateKeyError, KeyNotFoundError, PoolRegistry
 from app.settlement import utilization_view
 
@@ -94,6 +94,23 @@ def _invalid_request(param: str | None = None) -> GatewayError:
     )
 
 
+def _duplicate_message(existing: Any) -> str:
+    """Where the key being added already is, so it can be found and edited instead.
+
+    Names the entry by its label or provider and hint (never the key itself) and
+    its endpoint when it has one: a key added under another provider is the usual
+    reason it seems missing.
+    """
+    if existing is None:
+        return "A key with this material already exists."
+    name = f"'{existing.label}'" if existing.label else f"{existing.provider.value} key {existing.key_hint}"
+    where = f", {existing.base_url}" if existing.base_url else ""
+    return (
+        f"This key is already in the pool as {name} (provider {existing.provider.value}{where}). "
+        "Edit or remove that entry instead of adding it again."
+    )
+
+
 def _key_not_found() -> GatewayError:
     return GatewayError(
         message="Key not found.",
@@ -136,7 +153,7 @@ async def add_key(
         record = await _pool_call(registry.create, body, operator_id=operator["id"])
     except DuplicateKeyError as exc:
         raise GatewayError(
-            message="A key with this material already exists.",
+            message=_duplicate_message(exc.existing),
             status_code=409,
             error_type="invalid_request_error",
             code="duplicate_key",
@@ -267,6 +284,36 @@ async def test_key(
         ) from exc
     await audit(registry.redis, operator["id"], "pool_key.test", key_id,
                 {"model": result["model"], "ok": result["ok"], "verdict": result["verdict"]})
+    return result
+
+
+@router.post("/{key_id}/test-models", responses=_ERROR_RESPONSES)
+async def test_key_models(
+    key_id: Annotated[str, Path()],
+    registry: Annotated[PoolRegistry, Depends(get_pool_registry)],
+    operator: Annotated[dict, Depends(get_current_operator)],
+) -> dict:
+    """Test every model of this key, a few at a time, and list which ones work.
+
+    A provider's model list says what exists, not what this account may call: some
+    models need a paid balance or a plan. Each model costs one tiny request (a
+    refused one costs nothing). Same guarantees as the single test: no usage is
+    counted and no key or model state changes. At most 30 models per run.
+    """
+    try:
+        result = await _pool_call(probe_models, registry, key_id)
+    except KeyNotFoundError as exc:
+        raise _key_not_found() from exc
+    except ValueError as exc:
+        raise GatewayError(
+            message=str(exc),
+            status_code=422,
+            error_type="invalid_request_error",
+            code="invalid_request",
+            param="models",
+        ) from exc
+    await audit(registry.redis, operator["id"], "pool_key.test_models", key_id,
+                {"working": len(result["working"]), "failing": len(result["failing"])})
     return result
 
 
