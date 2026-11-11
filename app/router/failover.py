@@ -25,6 +25,12 @@ from app.router.classify import (
     pause_reason,
 )
 from app.router.exhaustion import PoolExhaustedError
+from app.router.learning import (
+    needs_from_params,
+    note_attempt,
+    record_failure,
+    record_success,
+)
 from app.router.rebuild import RebuildHook, identity_rebuild
 from app.router.retry_hint import get_quota_reset_seconds, retry_after_seconds
 from app.router.selection import select
@@ -283,6 +289,7 @@ async def execute_with_failover(
                 registry, model, "pool_exhausted", attempts, retry_count, start_time
             )
 
+        await note_attempt(registry.redis, candidate.key_id)
         try:
             result = await adapter_attempt(registry, candidate.key_id, model, messages, **params)
         except CandidateGoneError:
@@ -303,6 +310,9 @@ async def execute_with_failover(
             result = await _prime_stream(result, candidate.provider)
 
         if result.ok:
+            await record_success(
+                registry.redis, model, candidate.key_id, needs_from_params(messages, params)
+            )
             attempts.append(
                 AttemptRecord(
                     key_id=candidate.key_id,
@@ -324,6 +334,11 @@ async def execute_with_failover(
         reason = pause_reason(result.error)
         pause_seconds: int | None = None
         connectivity = is_connectivity_error(result.error)
+        # Teach the gateway what blocked this attempt, so other requests avoid it.
+        await record_failure(
+            registry.redis, model, candidate.key_id, needs_from_params(messages, params),
+            result.error, classification.state, result.headers, connectivity,
+        )
         try:
             if classification.state == "transient" and connectivity:
                 # We could not reach the provider (DNS, refused). The key and

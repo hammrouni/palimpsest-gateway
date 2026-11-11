@@ -1,7 +1,8 @@
 """OpenAI-compatible model listing: ``GET /v1/models`` and ``GET /v1/models/{id}``.
 
-The model strings served by pool keys that are not suspended. Only the model
-string is exposed; ``owned_by`` is fixed, never the upstream provider.
+The model strings served by pool keys that are not suspended, plus
+``palimpsest/supermode`` when any is. Only the model string is exposed;
+``owned_by`` is fixed, never the upstream provider.
 """
 from __future__ import annotations
 
@@ -13,6 +14,7 @@ from app.api.deps import get_current_account, get_store
 from app.errors import GatewayError
 from app.pool.models import KeyState
 from app.pool.registry import PoolRegistry
+from app.router.supermode import SUPERMODE_MODEL
 from app.store.redis_store import RedisStore
 
 router = APIRouter(prefix="/v1/models", tags=["models"])
@@ -32,6 +34,9 @@ async def _served_models(store: RedisStore) -> list[dict]:
         stamp = int(record.created_at.timestamp())
         for model in serving[record.id]:
             created[model] = min(stamp, created.get(model, stamp))
+    if created:
+        # Supermode is served whenever anything is: the gateway picks the model.
+        created[SUPERMODE_MODEL] = min(created.values())
     return [
         {"id": model, "object": "model", "created": created[model], "owned_by": _OWNER}
         for model in sorted(created)

@@ -41,7 +41,7 @@ async def test_lists_distinct_models_without_provider_or_key_details(client, red
     assert resp.status_code == 200
     body = resp.json()
     assert body["object"] == "list"
-    assert [m["id"] for m in body["data"]] == ["gpt-4o", "gpt-4o-mini", "meta/llama-3"]
+    assert [m["id"] for m in body["data"]] == ["gpt-4o", "gpt-4o-mini", "meta/llama-3", "palimpsest/supermode"]
     assert all(m["object"] == "model" and m["owned_by"] == "palimpsest" for m in body["data"])
     assert all(isinstance(m["created"], int) for m in body["data"])
     for secret in ("openai", "openrouter", "sk-secret", "active", "key_id"):
@@ -57,7 +57,7 @@ async def test_suspended_keys_models_are_not_listed(client, redis):
 
     data = (await client.get("/v1/models", headers=await _headers(client))).json()["data"]
 
-    assert [m["id"] for m in data] == ["live-model"]
+    assert [m["id"] for m in data] == ["live-model", "palimpsest/supermode"]
     assert live.id  # silence unused
 
 

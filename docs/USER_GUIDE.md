@@ -184,6 +184,8 @@ The bootstrap key is only seeded while no *active* operator key exists. It is a 
 | `PALIMPSEST_RETRY_BUDGET` | `3` | Retries after the first attempt, so a request makes at most `RETRY_BUDGET + 1` provider calls. `0` disables failover (env only; the runtime API accepts 1–20). Spending it returns `budget_exhausted`: a `429` when every try was a rate or quota limit, otherwise a `503`. |
 | `PALIMPSEST_COOLDOWN_SECONDS` | `60` | How long a key rests after a transient provider failure. Minimum 1. |
 | `PALIMPSEST_FAILOVER_MAX_WAIT_SECONDS` | `0` | When every key for the model is paused but one comes back within this many seconds, the request waits for it instead of answering `429`. `0` turns it off; at most 30. The wait holds the session lock, so keep it short. |
+| `PALIMPSEST_SUPERMODE_QUALITY` | `{}` | JSON object of model id to quality score (0–100) for [supermode](#supermode). Replaces the built-in score of that exact model, or scores a model the built-in table does not know. |
+| `PALIMPSEST_SUPERMODE_FALLBACK_MODELS` | `2` | How many other models supermode tries, best first, when every key of its chosen model is spent. `0` turns model fallback off; at most 10. |
 
 ### Settlement, fairness and pool visibility
 
@@ -309,6 +311,40 @@ curl -X PATCH http://localhost:8000/operator/v1/config \
   -H "Content-Type: application/json" \
   -d '{"provider_master_models": {"openrouter": "nvidia/nemotron-3-ultra-550b-a55b:free"}}'
 ```
+
+### Supermode
+
+Ask for the model `palimpsest/supermode` and the gateway picks the model for you: the best one the pool can serve right now, across every provider and key. `GET /v1/models` lists it whenever any model is served.
+
+The choice is quality first:
+
+1. Every model a non-suspended key serves is a contender.
+2. A model that cannot take this request is dropped: a context window too small for the prompt plus the reply (`max_tokens`, or 1024 when unset), no vision for a message with an image, no tool calling for a request with `tools`.
+3. The rest are ranked by quality, highest first. Equal quality goes to the model with the most capacity left: an uncapped key first, then the most remaining daily cap.
+4. A model with no key ready now (all exhausted, cooling down or capped out) is skipped.
+
+The first model serves the request. If every key of it is spent during the request, the next one in the ranking takes over, up to `PALIMPSEST_SUPERMODE_FALLBACK_MODELS` more. The response `model` field and the `X-Palimpsest-Model` header name the model that answered.
+
+No provider is called to make the choice, so it adds no latency and spends no quota. Quality, context window and capabilities come from a built-in table matched on the model id (`app/router/supermode_profiles.py`); routing prefixes (`openai/gpt-4o`) and OpenRouter suffixes (`:free`) are ignored when matching. A model the table does not know gets a low score, so it is picked only when no known model can serve. Set `PALIMPSEST_SUPERMODE_QUALITY` to correct a score or rank your own models:
+
+```bash
+PALIMPSEST_SUPERMODE_QUALITY='{"my-finetune": 92, "gpt-4o-mini": 60}'
+```
+
+#### Auto-improve
+
+Every provider answer teaches the gateway something, kept in Redis, so the next request (anyone's) avoids what blocked this one. Nothing needs turning on.
+
+| Learned | From | Effect |
+| :--- | :--- | :--- |
+| Context window | A success at N tokens proves the window holds N; a context-length refusal at N caps it below N. A later success above a refusal clears the refusal. | Supermode skips the model for prompts that would not fit, before calling anyone. |
+| Vision, tool calling | A request with images or `tools` that succeeds proves the capability; one refused for it marks the model as lacking it. | Supermode skips the model for requests that need it. |
+| Reliability | Successes and provider-side failures per model (rate limits, outages, missing model). Capability refusals and network faults on our side do not count. Counts are halved past 200 so old history fades. | After 5 requests, a model loses up to 20 quality points for its failure rate, and 5 more for 2 minutes after a 429. |
+| Requests per minute, per key | A 429 from a key whose provider sent no rate-limit headers: the requests that key took that minute, minus the refused one, become its learned limit (kept 24 hours). A later minute that goes past it without a 429 raises it. | Keys at their learned limit this minute are tried last, for every model, supermode or not. They are not skipped, so a wrong guess never refuses a request. |
+
+When a supermode request is refused because the chosen model cannot take it (too long, images, tools), the refusal is learned and the next model in the ranking gets the request instead of the client seeing the error. Image parts count as a flat 1500 tokens in the estimate, not their base64 length. Learned model facts expire 30 days after the model was last used.
+
+`master_model` still wins: with it set, supermode requests go to the master like any other. The pick is made per request, so two turns of one session can be answered by different models when capacity changes between them.
 
 ### Testing a key
 

@@ -13,6 +13,20 @@ drift. The running version is shown in the dashboard's **System** section and in
 ## [Unreleased]
 
 ### Added
+- Supermode: request the model `palimpsest/supermode` and the gateway picks the best
+  model the pool can serve now, across every provider and key. Quality first, then
+  capacity left; models whose context window, vision or tool support cannot take the
+  request are skipped, and so are models with no key ready. When every key of the
+  chosen model is spent, the next best model takes over. The answering model is in the
+  response `model` field and the `X-Palimpsest-Model` header. Scores come from a
+  built-in table; `PALIMPSEST_SUPERMODE_QUALITY` overrides them and
+  `PALIMPSEST_SUPERMODE_FALLBACK_MODELS` sets how many other models are tried.
+- Auto-improve: the gateway learns from every provider answer. Context windows, vision
+  and tool support are corrected by what succeeds and what is refused; models that
+  fail often or were just throttled rank lower in supermode; a key throttled without
+  rate-limit headers gets a learned requests-per-minute limit, and keys at it are
+  tried last so other requests go elsewhere first. A supermode request refused for a
+  missing capability moves to the next model instead of failing.
 - Test all models: the Test dialog can test every model of a key (a tiny request each,
   three at a time, up to 30) and show which ones answer, then **Keep only the working
   models**. A provider's list names what exists, not what an account may call; this

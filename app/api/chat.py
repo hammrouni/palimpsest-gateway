@@ -21,7 +21,7 @@ import math
 import re
 import time
 from collections.abc import AsyncIterator
-from dataclasses import dataclass
+from dataclasses import dataclass, field, replace
 from datetime import UTC, datetime
 from typing import Annotated
 
@@ -46,8 +46,10 @@ from app.pool.tokens import add_tokens
 from app.provider.adapter import AttemptResult
 from app.router.exhaustion import PoolExhaustedError, render_exhausted, render_fatal
 from app.router.failover import FailoverTrace, capacity_refusal, execute_with_failover
+from app.router.learning import capability_refused
 from app.router.master import effective_model
 from app.router.rebuild import identity_rebuild
+from app.router.supermode import is_supermode, needs_of, rank_models
 from app.schemas.chat import (
     ChatCompletionRequest,
     ChatCompletionResponse,
@@ -212,6 +214,10 @@ class _Turn:
     first_chunk_ms: int | None = None
     # Seconds the client was told to wait (Retry-After) on a throttled refusal.
     retry_after_s: int | None = None
+    # Supermode: the request named ``palimpsest/supermode`` and ``model`` is the
+    # gateway's pick; ``fallback_models`` are tried next, best first.
+    supermode: bool = False
+    fallback_models: list[str] = field(default_factory=list)
 
     def latency_ms(self) -> int:
         return int((time.monotonic() - self.started) * 1000)
@@ -220,6 +226,8 @@ class _Turn:
         headers = {"X-Request-ID": self.request_id}
         if self.session_id:
             headers["X-Session-ID"] = self.session_id
+        if self.supermode:
+            headers["X-Palimpsest-Model"] = self.model
         return headers
 
     def log(
@@ -573,25 +581,63 @@ async def _run_failover(
     else:
         rebuild_hook = identity_rebuild
 
-    try:
-        result, trace = await execute_with_failover(
-            PoolRegistry(turn.redis),
-            request.model,
-            provider_messages,
-            session=session_ref,
-            rebuild_hook=rebuild_hook,
-            **extra,
-            **_provider_kwargs(request),
-        )
-    except PoolExhaustedError as exc:
-        rendered = turn.error(render_exhausted(exc, model=request.model))
-        if exc.trace is not None:
-            await turn.settle(exc.trace, rendered.status_code, quiet=True)
-        outcome = "exhausted_429" if rendered.status_code == 429 else "exhausted_503"
-        turn.log(rendered.status_code, outcome, trace=exc.trace)
-        raise rendered from exc
-    except Exception as exc:
-        raise await _unexpected_failure(turn, trace, exc) from exc
+    # Supermode moves to the next model when every key of this one is spent or
+    # the model cannot take the request; earlier attempts stay in the trace.
+    models = [turn.model, *turn.fallback_models]
+    earlier: tuple = ()
+    for index, model in enumerate(models):
+        turn.model = model
+        try:
+            result, trace = await execute_with_failover(
+                PoolRegistry(turn.redis),
+                model,
+                provider_messages,
+                session=session_ref,
+                rebuild_hook=rebuild_hook,
+                **extra,
+                **_provider_kwargs(request),
+            )
+        except PoolExhaustedError as exc:
+            if exc.trace is not None:
+                earlier = (*earlier, *exc.trace.attempts)
+            if index + 1 < len(models):
+                logger.info(
+                    "supermode fallback request_id=%s from=%s to=%s",
+                    turn.request_id,
+                    model,
+                    models[index + 1],
+                )
+                continue
+            if exc.trace is not None:
+                exc.trace = replace(exc.trace, attempts=earlier)
+            rendered = turn.error(render_exhausted(exc, model=model))
+            if exc.trace is not None:
+                await turn.settle(exc.trace, rendered.status_code, quiet=True)
+            outcome = "exhausted_429" if rendered.status_code == 429 else "exhausted_503"
+            turn.log(rendered.status_code, outcome, trace=exc.trace)
+            raise rendered from exc
+        except Exception as exc:
+            raise await _unexpected_failure(turn, trace, exc) from exc
+        if (
+            not result.ok
+            and index + 1 < len(models)
+            and result.error is not None
+            and capability_refused(result.error)
+        ):
+            # This model cannot take the request (too long, images, tools); it
+            # is now learned, and the next model gets the request.
+            earlier = (*earlier, *trace.attempts)
+            logger.info(
+                "supermode fallback request_id=%s from=%s to=%s cause=%s",
+                turn.request_id,
+                model,
+                models[index + 1],
+                capability_refused(result.error),
+            )
+            continue
+        if earlier:
+            trace = replace(trace, attempts=(*earlier, *trace.attempts))
+        break
 
     if not result.ok:
         classification = trace.classification
@@ -812,6 +858,14 @@ async def chat_completions(
         # A master model is on: it serves the request, whatever the client asked.
         request = request.model_copy(update={"model": served_model})
 
+    supermode = is_supermode(request.model)
+    ranked: list[str] = []
+    if supermode:
+        # The gateway picks the model: best quality that fits and can serve now.
+        ranked = await rank_models(PoolRegistry(store.redis), needs_of(request))
+        if ranked:
+            request = request.model_copy(update={"model": ranked[0]})
+
     request_id = (
         x_request_id
         if x_request_id and _CLIENT_REQUEST_ID.fullmatch(x_request_id)
@@ -827,6 +881,8 @@ async def chat_completions(
         started=time.monotonic(),
         redis=store.redis,
         session_store=session_store,
+        supermode=supermode,
+        fallback_models=ranked[1:],
     )
 
     await _admit(turn)
@@ -886,7 +942,7 @@ async def chat_completions(
                 "id": generate_chat_id(),
                 "object": "chat.completion",
                 "created": int(time.time()),
-                "model": request.model,
+                "model": turn.model,
                 "choices": [
                     {
                         "index": 0,

@@ -110,6 +110,14 @@ class Settings(BaseSettings):
     # model a provider serves goes to that provider's master. ``master_model`` wins.
     provider_master_models: dict[str, str] = Field(default_factory=dict)
 
+    # Supermode (``palimpsest/supermode``): quality scores that replace the
+    # built-in ones, by exact model id ({"my-finetune": 90}).
+    supermode_quality: dict[str, int] = Field(default_factory=dict)
+
+    # Supermode: other models tried, best first, when every key of the chosen
+    # model is exhausted. 0 = no model fallback.
+    supermode_fallback_models: int = Field(default=2, ge=0, le=10)
+
     # Default pause after a transient provider failure, when the provider gives none.
     cooldown_seconds: int = Field(default=60, ge=1)
 
