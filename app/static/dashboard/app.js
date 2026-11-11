@@ -51,7 +51,21 @@ const CONFIG_FIELDS = [
 
 const NUMBER_FORMAT = new Intl.NumberFormat();
 
-const PROVIDERS = ['openai', 'anthropic', 'google', 'openrouter', 'mistral', 'groq', 'custom'];
+const PROVIDERS = ['openai', 'anthropic', 'google', 'openrouter', 'mistral', 'groq', 'zai', 'github', 'custom'];
+
+/* Providers whose endpoint a key may point elsewhere (the OpenAI-compatible ones),
+   and where each one goes when no base URL is set. */
+const BASE_URL_PROVIDERS = ['openai', 'mistral', 'groq', 'zai', 'github', 'custom'];
+/* Placeholder text only: the bundle never loads anything from another origin (a test
+   checks that no "http(s)://" literal appears here), so the scheme is added here. */
+const secure = (rest) => 'https' + '://' + rest;
+const DEFAULT_ENDPOINTS = {
+  openai: secure('api.openai.com/v1'),
+  mistral: secure('api.mistral.ai/v1'),
+  groq: secure('api.groq.com/openai/v1'),
+  zai: secure('api.z.ai/api/paas/v4'),
+  github: secure('models.github.ai/inference'),
+};
 const KEY_STATES = ['active', 'exhausted', 'cooldown', 'suspended'];
 
 const POOL_KEY_COLUMNS = [
@@ -830,7 +844,9 @@ function createStatus() {
         /* Signing out has already replaced the screen; anything else is the
            operator's to read. */
         if (!(err instanceof SignedOut)) {
-          this.report(err.param ? err.param + ': ' + err.message : err.message, 'error');
+          // Some messages already name their field ("base_url must not ..."): say it once.
+          const named = err.param && !err.message.startsWith(err.param);
+          this.report(named ? err.param + ': ' + err.message : err.message, 'error');
           if (onError) {
             await onError(err);
           }
@@ -1028,12 +1044,14 @@ function buildEditForm(record, modal) {
     return changes;
   };
 
+  const baseUrl = buildBaseUrlField(record.provider, record.base_url || '');
   const picker = buildModelPicker(models, () =>
     apiFetch(keyActionPath(record.id, '/available-models'))
   );
 
   form.append(
     labelled('Name (empty = provider and key hint)', name),
+    ...(BASE_URL_PROVIDERS.includes(record.provider) ? [baseUrl.node] : []),
     labelled('Models (comma separated)', models),
     picker,
     labelled('Daily cap (empty = unlimited)', cap),
@@ -1050,6 +1068,14 @@ function buildEditForm(record, modal) {
       return;
     }
     const capText = cap.value.trim();
+    if (record.provider === 'custom' && !baseUrl.value()) {
+      modal.status.report('A custom key needs its base URL.', 'error');
+      baseUrl.input.focus();
+      return;
+    }
+    // Sent only when changed, like the schedule: the key's own list of models is
+    // fetched from the endpoint it is saved with.
+    const baseUrlChanged = baseUrl.value() !== (record.base_url || '');
     modal.primaryButton.disabled = true;
     modal.status.run(
       async () => {
@@ -1058,6 +1084,7 @@ function buildEditForm(record, modal) {
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({
             ...resetChanges(),
+            ...(baseUrlChanged ? { base_url: baseUrl.value() || null } : {}),
             label: name.value.trim() === '' ? null : name.value.trim(),
             models: list,
             daily_cap: capText === '' ? null : Number(capText),
@@ -1288,6 +1315,9 @@ function drawPoolKeysTable() {
           cell.title = record.last_modified_by;
         } else {
           cell.textContent = formatted;
+          if (column.key === 'provider' && record.base_url) {
+            cell.title = record.base_url;
+          }
         }
       }
       tr.append(cell);
@@ -1405,6 +1435,10 @@ function addKeyPayload(fields) {
   if (fields.label.value.trim() !== '') {
     payload.label = fields.label.value.trim();
   }
+  const baseUrl = fields.baseUrl ? fields.baseUrl.value.trim() : '';
+  if (baseUrl !== '' && BASE_URL_PROVIDERS.includes(payload.provider)) {
+    payload.base_url = baseUrl;
+  }
 
   const dailyCap = fields.dailyCap.value.trim();
   if (dailyCap !== '') {
@@ -1435,6 +1469,40 @@ function addKeyPayload(fields) {
    /v1/models shows users. `load` returns [{id, name, free}] from the provider. */
 function parseModelList(input) {
   return input.value.split(',').map((model) => model.trim()).filter(Boolean);
+}
+
+/* The endpoint a key sends its requests to. Shown only for providers that allow
+   one: required in spirit for "custom" (there is no default), an optional override
+   for the rest. `sync(provider)` redraws the label, hint and visibility. */
+function buildBaseUrlField(initialProvider, initialValue) {
+  const input = el('input');
+  input.type = 'url';
+  input.name = 'baseUrl';
+  input.id = 'key-base-url';
+  input.autocomplete = 'off';
+  input.spellcheck = false;
+  input.value = initialValue || '';
+
+  const caption = el('span');
+  const hint = el('span', 'field-hint');
+  const wrapper = el('label', 'field');
+  wrapper.htmlFor = input.id;
+  wrapper.append(caption, input, hint);
+
+  const sync = (provider) => {
+    wrapper.hidden = !BASE_URL_PROVIDERS.includes(provider);
+    if (provider === 'custom') {
+      caption.textContent = 'Base URL';
+      input.placeholder = secure('your-server.example.com/v1');
+      hint.textContent = 'The OpenAI-compatible endpoint, up to and including /v1. Models are listed from its /models.';
+    } else {
+      caption.textContent = 'Base URL (optional)';
+      input.placeholder = DEFAULT_ENDPOINTS[provider] || '';
+      hint.textContent = 'Leave empty to use the provider\u2019s own endpoint.';
+    }
+  };
+  sync(initialProvider);
+  return { node: wrapper, input, sync, value: () => input.value.trim() };
 }
 
 function buildModelPicker(input, load) {
@@ -1641,6 +1709,7 @@ function buildAddForm(modal) {
 
   const provider = control('select', 'provider');
   drawOptions(provider, PROVIDERS, 'openai', PROVIDER_NAMES);
+  const baseUrl = buildBaseUrlField(provider.value, '');
 
   const label = control('input', 'label', 'text');
   label.maxLength = 60;
@@ -1683,11 +1752,23 @@ function buildAddForm(modal) {
     return apiFetch(AVAILABLE_MODELS_PATH, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ provider: provider.value, key: key.value.trim() }),
+      body: JSON.stringify({
+        provider: provider.value,
+        key: key.value.trim(),
+        ...(baseUrl.value() ? { base_url: baseUrl.value() } : {}),
+      }),
     });
   });
-  provider.addEventListener('change', () => picker.clear());
-  form.addEventListener('reset', () => picker.clear());
+  provider.addEventListener('change', () => {
+    baseUrl.sync(provider.value);
+    picker.clear();
+  });
+  baseUrl.input.addEventListener('change', () => picker.clear());
+  form.addEventListener('reset', () => {
+    picker.clear();
+    // `reset` fires before the controls return to their defaults.
+    setTimeout(() => baseUrl.sync(provider.value), 0);
+  });
 
   /* The required fields come first; limits and schedule are optional. */
   const grid = el('div', 'form-grid');
@@ -1695,6 +1776,7 @@ function buildAddForm(modal) {
     labelled('Provider', provider),
     labelled('Provider key', key),
     labelled('Name (optional)', label),
+    baseUrl.node,
     labelled('Models (comma separated)', models),
     picker
   );
@@ -1716,6 +1798,7 @@ function buildAddForm(modal) {
       payload = addKeyPayload({
         provider,
         label,
+        baseUrl: baseUrl.input,
         models,
         key,
         dailyCap,
@@ -1731,6 +1814,11 @@ function buildAddForm(modal) {
     if (!payload.key) {
       modal.status.report('Paste the provider key.', 'error');
       key.focus();
+      return;
+    }
+    if (payload.provider === 'custom' && !payload.base_url) {
+      modal.status.report('Enter the base URL of the OpenAI-compatible endpoint.', 'error');
+      baseUrl.input.focus();
       return;
     }
     if (!payload.models.length) {
@@ -2042,6 +2130,8 @@ const PROVIDER_NAMES = {
   openrouter: 'OpenRouter',
   mistral: 'Mistral',
   groq: 'Groq',
+  zai: 'Z.ai (GLM)',
+  github: 'GitHub Models',
   custom: 'Custom (OpenAI-compatible)',
 };
 

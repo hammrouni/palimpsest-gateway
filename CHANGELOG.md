@@ -13,6 +13,15 @@ drift. The running version is shown in the dashboard's **System** section and in
 ## [Unreleased]
 
 ### Added
+- Pool keys take their own `base_url` (OpenAI-compatible providers: custom, OpenAI,
+  Mistral, Groq, Z.ai, GitHub Models). The Add key and Edit forms show a Base URL
+  field, the model picker lists from it, and the pool API accepts it on create and
+  `PATCH`. A custom key no longer depends on the single `PALIMPSEST_CUSTOM_BASE_URL`,
+  so one gateway can pool several endpoints. URLs with credentials, query strings or
+  link-local and cloud-metadata hosts are refused.
+- New providers: Z.ai (`zai`, GLM models, including the coding-plan endpoint via
+  `base_url`) and GitHub Models (`github`, `publisher/model` names). Both can list
+  their models from the dashboard.
 - Rate-limit refusals are counted as **throttled**, not as errors. `pool_exhausted`,
   a rate-limited `budget_exhausted` and user-cap refusals no longer raise the error
   rate, lower the success rate or skew latency; the dashboard draws them as their own

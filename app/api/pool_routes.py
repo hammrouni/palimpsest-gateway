@@ -115,6 +115,7 @@ def _key_record_body(record: Any) -> dict:
         "daily_cap": record.daily_cap,
         "token_cap": record.token_cap,
         "label": record.label,
+        "base_url": record.base_url,
         "state": record.state.value,
         "operator_id": record.operator_id,
         "last_modified_by": record.last_modified_by,
@@ -188,6 +189,15 @@ async def update_key(
         record = await _pool_call(registry.update, key_id, body, operator_id=operator["id"])
     except KeyNotFoundError as exc:
         raise _key_not_found() from exc
+    except ValueError as exc:
+        # A base_url this provider cannot take, or one a custom key cannot lose.
+        raise GatewayError(
+            message=str(exc),
+            status_code=422,
+            error_type="invalid_request_error",
+            code="invalid_request",
+            param="base_url",
+        ) from exc
     await audit(registry.redis, operator["id"], "pool_key.update", key_id,
                 {"fields": sorted(body.model_dump(exclude_unset=True))})
     return _key_record_body(record)
@@ -343,6 +353,8 @@ class AvailableModelsRequest(BaseModel):
 
     provider: Provider
     key: str = Field(min_length=1, max_length=4096)
+    # List from this endpoint instead of the provider's own (OpenAI-compatible providers).
+    base_url: str | None = Field(default=None, max_length=300)
 
 
 @ops_router.post("/available-models")
@@ -352,7 +364,7 @@ async def post_available_models(
 ) -> dict:
     """List a provider's models using a key that is not in the pool yet (the add-key form)."""
     try:
-        models = await fetch_models(body.provider, body.key.strip())
+        models = await fetch_models(body.provider, body.key.strip(), body.base_url)
     except CatalogError as exc:
         raise _catalog_error(exc) from exc
     return {"object": "list", "data": models}

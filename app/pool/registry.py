@@ -19,6 +19,7 @@ from app.config import get_settings
 from app.core.ids import new_id
 from app.pool.limits import clear_observed
 from app.pool.models import (
+    BASE_URL_PROVIDERS,
     KeyCreate,
     KeyRecord,
     KeyState,
@@ -177,6 +178,7 @@ class PoolRegistry:
             "daily_cap": "" if data.daily_cap is None else str(data.daily_cap),
             "token_cap": "" if data.token_cap is None else str(data.token_cap),
             "label": data.label or "",
+            "base_url": data.base_url or "",
             "operator_id": operator_id or "",
             "last_modified_by": operator_id or "",
             "created_at": now.isoformat(),
@@ -259,6 +261,17 @@ class PoolRegistry:
             mapping["daily_cap"] = "" if data.daily_cap is None else str(data.daily_cap)
         if "label" in data.model_fields_set:
             mapping["label"] = data.label or ""
+        if "base_url" in data.model_fields_set:
+            provider = Provider(record["provider"])
+            if provider not in BASE_URL_PROVIDERS:
+                raise ValueError(f"{provider.value} keys do not take a base_url")
+            if (
+                data.base_url is None
+                and provider == Provider.CUSTOM
+                and not get_settings().custom_base_url
+            ):
+                raise ValueError("a custom provider needs a base_url")
+            mapping["base_url"] = data.base_url or ""
         if "reset_at" in data.model_fields_set:
             mapping["reset_at"] = _as_aware_utc(data.reset_at).isoformat()
         if "reset_period_hours" in data.model_fields_set:
@@ -616,6 +629,7 @@ class PoolRegistry:
             daily_cap=float(daily_cap) if daily_cap else None,
             token_cap=int(decoded["token_cap"]) if decoded.get("token_cap") else None,
             label=decoded.get("label") or None,
+            base_url=decoded.get("base_url") or None,
             state=state,
             operator_id=decoded.get("operator_id") or None,
             last_modified_by=decoded.get("last_modified_by") or None,

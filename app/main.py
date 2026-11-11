@@ -173,6 +173,21 @@ def _validation_param(exc: RequestValidationError) -> str | None:
     return None
 
 
+def _validation_message(exc: RequestValidationError) -> str:
+    """``Invalid request.``, or the reason when a ``base_url`` was refused.
+
+    The reasons are fixed sentences written for the operator ("must not point at a
+    cloud metadata service") and never repeat the submitted value, so they are
+    safe to return; other fields keep the generic message.
+    """
+    for err in exc.errors():
+        if err.get("loc", ())[-1:] == ("base_url",) or "base_url" in str(err.get("msg", "")):
+            message = str(err.get("msg", "")).removeprefix("Value error, ")
+            if message:
+                return message[:200]
+    return "Invalid request."
+
+
 def _envelope(error_type: str, message: str, code: str, param: str | None = None) -> dict:
     return {"error": {"type": error_type, "message": message, "param": param, "code": code}}
 
@@ -288,7 +303,7 @@ def create_app() -> FastAPI:
         return JSONResponse(
             status_code=422,
             content=_envelope(
-                "invalid_request_error", "Invalid request.", "invalid_request",
+                "invalid_request_error", _validation_message(exc), "invalid_request",
                 _validation_param(exc),
             ),
             headers=_request_id_header(request),

@@ -24,7 +24,7 @@ from litellm.exceptions import (
 
 from app.config import get_settings
 from app.pool.limits import record_observed
-from app.pool.models import Provider
+from app.pool.models import BASE_URL_PROVIDERS, DEFAULT_BASE_URLS, Provider
 from app.pool.registry import KeyNotFoundError, PoolRegistry
 
 litellm.verbose = False
@@ -41,6 +41,8 @@ _MODEL_PREFIX: dict[Provider, str] = {
     Provider.OPENROUTER: "openrouter",
     Provider.MISTRAL: "mistral",
     Provider.GROQ: "groq",
+    Provider.ZAI: "zai",
+    Provider.GITHUB: "github",
     Provider.CUSTOM: "openai",  # custom OpenAI-compatible endpoints use openai prefix
 }
 
@@ -93,16 +95,24 @@ def _mapped_model(provider: Provider, model: str) -> str:
     return f"{_MODEL_PREFIX[provider]}/{model}"
 
 
-def _api_base(provider: Provider) -> str | None:
+def _api_base(provider: Provider, key_base_url: str | None = None) -> str | None:
+    """Where this attempt goes: the key's own base URL, else the provider's setting/default."""
     settings = get_settings()
     if provider == Provider.OPENROUTER:
         return settings.openrouter_base_url
+    if provider in BASE_URL_PROVIDERS and key_base_url:
+        return key_base_url
     if provider == Provider.OPENAI:
         return settings.openai_base_url or None
     if provider == Provider.MISTRAL:
         return settings.mistral_base_url or None
     if provider == Provider.GROQ:
         return settings.groq_base_url or None
+    if provider == Provider.ZAI:
+        return settings.zai_base_url or None  # litellm's own default is the Z.ai API
+    if provider == Provider.GITHUB:
+        # litellm still defaults to GitHub's retired Azure endpoint.
+        return settings.github_base_url or DEFAULT_BASE_URLS[Provider.GITHUB]
     if provider == Provider.CUSTOM:
         return settings.custom_base_url or None
     return None
@@ -163,7 +173,7 @@ async def _attempt_once(
 
     provider = record.provider
     mapped_model = _mapped_model(provider, model)
-    api_base = _api_base(provider)
+    api_base = _api_base(provider, record.base_url)
 
     filtered_params = {
         k: v for k, v in params.items() if k in _LITELLM_PARAM_WHITELIST

@@ -6,7 +6,7 @@
 </picture>
 
 ### One OpenAI-compatible endpoint in front of all your LLM keys.
-Pool OpenAI, Anthropic, Gemini, OpenRouter, Mistral, Groq and custom OpenAI-compatible keys. Fail over automatically. Keep every conversation going.
+Pool OpenAI, Anthropic, Gemini, OpenRouter, Mistral, Groq, Z.ai, GitHub Models and custom OpenAI-compatible keys. Fail over automatically. Keep every conversation going.
 
 [![CI](https://github.com/hammrouni/palimpsest-gateway/actions/workflows/ci.yml/badge.svg)](https://github.com/hammrouni/palimpsest-gateway/actions/workflows/ci.yml)
 [![License: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
@@ -86,7 +86,7 @@ flowchart LR
 ## Features
 
 - **Drop-in OpenAI API**: `/v1/chat/completions` (streaming and non-streaming, tool calls), `/v1/models`.
-- **Multi-provider key pool**: OpenAI, Anthropic, Google Gemini, OpenRouter, Mistral, Groq and custom OpenAI-compatible keys, each with optional request cap, token budget, reset schedule and a label.
+- **Multi-provider key pool**: OpenAI, Anthropic, Google Gemini, OpenRouter, Mistral, Groq, Z.ai, GitHub Models and custom OpenAI-compatible keys, each with optional request cap, token budget, reset schedule and a label.
 - **Master models**: send every request to one chosen model for the whole gateway, or to one chosen model per provider, picked from the models your keys serve. Optionally let every key of a provider share one model list.
 - **Limit sync**: check an OpenRouter key against OpenRouter's own numbers and correct the local cap and used count.
 - **Clear pauses**: when a key or model is held back, the dashboard says why (out of credits, daily limit, rate limit, model not available) and when it returns.
@@ -111,7 +111,11 @@ flowchart LR
 | `openrouter` | OpenRouter | `sk-or-...` | Requests routed as `openrouter/<model>`; the dashboard can show the provider's view of remaining free requests, and the limit sync can correct a key's cap and used count. |
 | `mistral` | Mistral | Mistral API key | Requests routed as `mistral/<model>`. Base URL override: `PALIMPSEST_MISTRAL_BASE_URL`. |
 | `groq` | Groq | `gsk_...` | Requests routed as `groq/<model>`. Base URL override: `PALIMPSEST_GROQ_BASE_URL`. |
-| `custom` | Any OpenAI-compatible endpoint | The endpoint's key | Needs `PALIMPSEST_CUSTOM_BASE_URL`. |
+| `zai` | Z.ai (GLM) | Z.ai API key | Requests routed as `zai/<model>`. Set a key's `base_url` to `https://api.z.ai/api/coding/paas/v4` for the GLM coding plan. Base URL override: `PALIMPSEST_ZAI_BASE_URL`. |
+| `github` | GitHub Models | GitHub token with `models` access | Requests routed as `github/<model>`, models named like `openai/gpt-4.1`; served from `https://models.github.ai/inference`. Base URL override: `PALIMPSEST_GITHUB_BASE_URL`. |
+| `custom` | Any OpenAI-compatible endpoint | The endpoint's key | Each key sets its own `base_url` (the dashboard asks for it); `PALIMPSEST_CUSTOM_BASE_URL` is only the default for keys that set none. |
+
+Every OpenAI-compatible provider (all but Anthropic, Google and OpenRouter) takes an optional per-key `base_url`, so one gateway can pool several endpoints of the same kind (a local Ollama and a hosted vLLM, say). The provider key is sent to that URL, so it must be `http(s)://host[:port][/path]`; credentials in the URL, query strings and cloud metadata addresses are refused.
 
 
 ## Two ways in
