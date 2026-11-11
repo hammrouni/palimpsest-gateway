@@ -1569,6 +1569,11 @@ h4 {
   color: var(--ok);
 }
 
+.sync-note--warn {
+  background: var(--warn-bg);
+  color: var(--warn);
+}
+
 .sync-note--error {
   background: var(--error-bg);
   color: var(--error);

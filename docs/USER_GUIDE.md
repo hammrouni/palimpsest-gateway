@@ -310,6 +310,16 @@ curl -X PATCH http://localhost:8000/operator/v1/config \
   -d '{"provider_master_models": {"openrouter": "nvidia/nemotron-3-ultra-550b-a55b:free"}}'
 ```
 
+### Testing a key
+
+After adding a key, check that it answers: **Test** on its row in Pool Keys (or the API) sends one tiny real request through it, using the same endpoint and model mapping as live traffic, and reports the result.
+
+```bash
+curl -X POST http://localhost:8000/v1/operator/pool/keys/KEY_ID/test   -H "Authorization: Bearer $OPERATOR_KEY"   -H "Content-Type: application/json"   -d '{"model": "gpt-4o-mini"}'   # optional: defaults to the key's first model
+```
+
+The answer is always `200` with `ok` and a `verdict`: `ok`, `key_rejected` (the provider refused the key), `model_not_found`, `no_credits`, `rate_limited` (the key works but is limited right now), `unreachable` (wrong base URL or server down), `timeout`, `provider_error` or `bad_request`. It also carries `latency_ms`, the short `reply` and `tokens` on success, and on failure the provider's own words in `detail` with key-shaped strings removed. A test is a diagnostic, not traffic: nothing is settled, counted in usage or statistics, and no key or model state changes, even when the provider refuses. It costs one request of a few tokens at the provider, and each run is audited as `pool_key.test`.
+
 ### Syncing a key's limits with OpenRouter
 
 The gateway counts only the requests it served, but OpenRouter counts every request on the account. For OpenRouter keys the gateway can ask OpenRouter (`GET /key`) and correct itself:

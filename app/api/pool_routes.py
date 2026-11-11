@@ -21,6 +21,7 @@ from app.pool.events import recent_failover_events
 from app.pool.limit_sync import sync_all, sync_key
 from app.pool.limits import LiveLimitsError, get_observed, live_limits
 from app.pool.models import KeyCreate, KeyUpdate, Provider
+from app.pool.probe import probe_key
 from app.pool.registry import DuplicateKeyError, KeyNotFoundError, PoolRegistry
 from app.settlement import utilization_view
 
@@ -231,6 +232,42 @@ async def resume_key(
         raise _key_not_found() from exc
     await audit(registry.redis, operator["id"], "pool_key.resume", key_id)
     return _key_record_body(record)
+
+
+class KeyTestRequest(BaseModel):
+    """Which of the key's models to test; the first one when omitted."""
+
+    model: str | None = Field(default=None, max_length=200)
+
+
+@router.post("/{key_id}/test", responses=_ERROR_RESPONSES)
+async def test_key(
+    key_id: Annotated[str, Path()],
+    registry: Annotated[PoolRegistry, Depends(get_pool_registry)],
+    operator: Annotated[dict, Depends(get_current_operator)],
+    body: KeyTestRequest | None = None,
+) -> dict:
+    """Send one tiny request through this key and say whether it answered.
+
+    A provider failure is a normal ``200`` result with ``ok: false`` and a
+    ``verdict``. Nothing is metered and no key or model state changes. The cost
+    is one request of a few tokens at the provider.
+    """
+    try:
+        result = await _pool_call(probe_key, registry, key_id, body.model if body else None)
+    except KeyNotFoundError as exc:
+        raise _key_not_found() from exc
+    except ValueError as exc:
+        raise GatewayError(
+            message=str(exc),
+            status_code=422,
+            error_type="invalid_request_error",
+            code="invalid_request",
+            param="model",
+        ) from exc
+    await audit(registry.redis, operator["id"], "pool_key.test", key_id,
+                {"model": result["model"], "ok": result["ok"], "verdict": result["verdict"]})
+    return result
 
 
 @router.get("/{key_id}/provider-limits", responses=_ERROR_RESPONSES)

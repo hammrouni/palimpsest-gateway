@@ -13,6 +13,12 @@ drift. The running version is shown in the dashboard's **System** section and in
 ## [Unreleased]
 
 ### Added
+- Test button on every pool key: sends one tiny real request through the key (same
+  endpoint and model mapping as live traffic) and shows whether it answered, how
+  fast, and a plain verdict (key refused, model not found, out of credits,
+  rate-limited, endpoint unreachable, timeout...). `POST
+  /v1/operator/pool/keys/{key_id}/test`. A test changes no key or model state and
+  counts no usage; it is audited as `pool_key.test`.
 - Pool keys take their own `base_url` (OpenAI-compatible providers: custom, OpenAI,
   Mistral, Groq, Z.ai, GitHub Models). The Add key and Edit forms show a Base URL
   field, the model picker lists from it, and the pool API accepts it on create and

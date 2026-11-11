@@ -900,6 +900,8 @@ function rowActionCell(record) {
 
   const edit = button('Edit', 'ghost btn-sm', () => showEditKey(record));
   const limits = button('Limits', 'ghost btn-sm', () => showProviderLimits(record));
+  const test = button('Test', 'ghost btn-sm', () => showTestKey(record));
+  test.title = 'Send one tiny request through this key to check it answers';
 
   const remove = button('Remove', 'ghost btn-sm danger', async () => {
     const confirmed = await confirmAction({
@@ -917,7 +919,7 @@ function rowActionCell(record) {
     }, drawPoolKeysTable, afterKeyActionError);
   });
 
-  cell.append(toggle, edit, limits, remove);
+  cell.append(toggle, edit, test, limits, remove);
   return cell;
 }
 
@@ -1104,6 +1106,114 @@ function buildEditForm(record, modal) {
   });
 
   return form;
+}
+
+/* Test a key: one real, tiny request through it (same endpoint and model mapping as
+   live traffic), so the operator sees at once whether it answers. Opens the dialog
+   and runs the first model straight away; "Run again" and the model picker retest.
+   Nothing is metered and no key state changes, whatever the provider says. */
+const TEST_VERDICT_TITLES = {
+  ok: 'The key answered',
+  key_rejected: 'The provider refused this key',
+  model_not_found: 'Model not found for this key',
+  no_credits: 'Out of credits or quota',
+  rate_limited: 'Rate-limited right now',
+  unreachable: 'Could not reach the endpoint',
+  timeout: 'No answer in time',
+  provider_error: 'Provider error',
+  bad_request: 'Test request rejected',
+  error: 'Unexpected error',
+};
+
+function drawTestResult(box, result) {
+  const passed = result.ok;
+  // A key that works but is limited is a warning, not a failure of the key itself.
+  const limited = result.verdict === 'rate_limited' || result.verdict === 'no_credits';
+  const banner = el(
+    'p',
+    'sync-note sync-note--' + (passed ? 'ok' : limited ? 'warn' : 'error'),
+    (passed ? '✓ ' : limited ? '! ' : '✗ ') +
+      (TEST_VERDICT_TITLES[result.verdict] || 'Result') +
+      (result.latency_ms !== null && result.latency_ms !== undefined ? ' · ' + result.latency_ms + ' ms' : '')
+  );
+  banner.setAttribute('role', 'status');
+
+  const rows = [
+    { name: 'Model', value: result.model },
+    { name: 'Provider', value: PROVIDER_NAMES[result.provider] || result.provider },
+  ];
+  if (result.status_code !== null && result.status_code !== undefined) {
+    rows.push({ name: 'HTTP status', value: String(result.status_code) });
+  }
+  if (passed) {
+    rows.push({ name: 'Reply', value: result.reply ? '“' + result.reply + '”' : '(empty: the model spent its few tokens thinking)' });
+    if (result.tokens !== null && result.tokens !== undefined) {
+      rows.push({ name: 'Tokens used', value: String(result.tokens) });
+    }
+  } else if (result.detail) {
+    rows.push({ name: 'Provider said', value: result.detail });
+  }
+  box.replaceChildren(
+    banner,
+    el('p', 'note', result.message),
+    dataTable(
+      [
+        { label: 'Field', cell: (row) => row.name },
+        { label: 'Value', cell: (row) => row.value },
+      ],
+      rows,
+      ''
+    )
+  );
+}
+
+function showTestKey(record) {
+  const box = el('div', 'test-result');
+  const models = record.models || [];
+  const picker = el('select');
+  for (const model of models) {
+    const option = el('option', null, model);
+    option.value = model;
+    picker.append(option);
+  }
+
+  const run = () => {
+    handle.primaryButton.disabled = true;
+    picker.disabled = true;
+    box.replaceChildren(el('p', 'note', 'Sending one small request to ' + picker.value + '…'));
+    handle.status.run(
+      () =>
+        apiFetch(keyActionPath(record.id, '/test'), {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ model: picker.value }),
+        }),
+      (result) => drawTestResult(box, result),
+      (err) => box.replaceChildren(el('p', 'note', 'The test could not run: ' + err.message))
+    ).finally(() => {
+      if (handle.primaryButton) {
+        handle.primaryButton.disabled = false;
+        picker.disabled = false;
+      }
+    });
+  };
+
+  const handle = openModal({
+    title: 'Test ' + keyName(record),
+    content: [
+      el(
+        'p',
+        'note',
+        'Sends one tiny real request (a few tokens) through this key. Nothing is counted against its quota in the dashboard and its state does not change.'
+      ),
+      ...(models.length > 1 ? [labelled('Model', picker)] : []),
+      box,
+    ],
+    primary: { label: 'Run again', onClick: run },
+    cancelLabel: 'Close',
+    wide: true,
+  });
+  run();
 }
 
 /* What the provider itself reports about a key's limits: its live answer where it
@@ -1839,7 +1949,10 @@ function buildAddForm(modal) {
       form.reset();
       closeModal();
       replaceRecord(created);
-      poolKeys.panel.report(keyName(created) + ' added. It is routable now.', 'ok');
+      poolKeys.panel.report(
+        keyName(created) + ' added. It is routable now. Use Test on its row to check it answers.',
+        'ok'
+      );
     }, drawPoolKeysTable).finally(() => {
       if (modal.primaryButton) {
         modal.primaryButton.disabled = false;
