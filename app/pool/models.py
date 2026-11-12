@@ -38,6 +38,7 @@ class Provider(StrEnum):
     MISTRAL = "mistral"
     GROQ = "groq"
     ZAI = "zai"
+    XAI = "xai"
     GITHUB = "github"
     CUSTOM = "custom"
 
@@ -50,6 +51,7 @@ BASE_URL_PROVIDERS = frozenset(
         Provider.MISTRAL,
         Provider.GROQ,
         Provider.ZAI,
+        Provider.XAI,
         Provider.GITHUB,
         Provider.CUSTOM,
     }
@@ -62,6 +64,7 @@ DEFAULT_BASE_URLS: dict[Provider, str | None] = {
     Provider.MISTRAL: None,
     Provider.GROQ: None,
     Provider.ZAI: "https://api.z.ai/api/paas/v4",
+    Provider.XAI: "https://api.x.ai/v1",
     Provider.GITHUB: "https://models.github.ai/inference",
 }
 

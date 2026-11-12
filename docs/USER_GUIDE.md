@@ -152,6 +152,7 @@ The bootstrap key is only seeded while no *active* operator key exists. It is a 
 | `PALIMPSEST_MISTRAL_BASE_URL` | *(none)* | Override for the Mistral adapter base URL. |
 | `PALIMPSEST_GROQ_BASE_URL` | *(none)* | Override for the Groq adapter base URL. |
 | `PALIMPSEST_ZAI_BASE_URL` | *(none)* | Override for the Z.ai adapter base URL (default `https://api.z.ai/api/paas/v4`). |
+| `PALIMPSEST_XAI_BASE_URL` | *(none)* | Override for the xAI adapter base URL (default `https://api.x.ai/v1`). |
 | `PALIMPSEST_GITHUB_BASE_URL` | *(none)* | Override for the GitHub Models adapter base URL (default `https://models.github.ai/inference`). |
 | `PALIMPSEST_CUSTOM_BASE_URL` | *(none)* | Default endpoint for `custom` keys that set no `base_url` of their own. Not needed when every custom key sets one. |
 
@@ -263,7 +264,7 @@ curl -X POST http://localhost:8000/v1/operator/pool/keys \
       }'
 ```
 
-Supported providers are `openai`, `anthropic`, `google`, `openrouter`, `mistral`, `groq`, `zai`, `github` and `custom`. Adding another provider is a deliberate code change in `app/pool/models.py`.
+Supported providers are `openai`, `anthropic`, `google`, `openrouter`, `mistral`, `groq`, `zai`, `xai`, `github` and `custom`. Adding another provider is a deliberate code change in `app/pool/models.py`.
 
 **Endpoints.** `custom` is any OpenAI-compatible server (Ollama, vLLM, LM Studio, a hosted gateway): give the key its `base_url`, up to and including `/v1`, for example `"base_url": "http://localhost:11434/v1"`. The dashboard's Add key form shows a *Base URL* field for it. `openai`, `mistral`, `groq`, `zai` and `github` accept the same optional field to override their usual endpoint; `anthropic`, `google` and `openrouter` do not. A key without a `base_url` uses the provider's own endpoint (or `PALIMPSEST_CUSTOM_BASE_URL` for `custom`). It can be changed later with `PATCH`, and `null` removes it.
 

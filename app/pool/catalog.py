@@ -59,6 +59,7 @@ def _request(
         Provider.MISTRAL: settings.mistral_base_url or _MISTRAL_BASE,
         Provider.GROQ: settings.groq_base_url or _GROQ_BASE,
         Provider.ZAI: settings.zai_base_url or DEFAULT_BASE_URLS[Provider.ZAI],
+        Provider.XAI: settings.xai_base_url or DEFAULT_BASE_URLS[Provider.XAI],
         Provider.CUSTOM: settings.custom_base_url,
     }
     if provider in configured:

@@ -232,7 +232,7 @@ async def test_api_adds_a_custom_key_and_returns_its_base_url(
 async def test_api_accepts_the_new_providers(
     async_client: AsyncClient, operator_headers: dict[str, str]
 ):
-    for provider in ("zai", "github"):
+    for provider in ("zai", "xai", "github"):
         resp = await async_client.post(
             KEYS, headers=operator_headers,
             json={"provider": provider, "models": ["m"], "key": f"key-{provider}"},
@@ -284,6 +284,28 @@ async def test_zai_catalogue_uses_its_api_base(monkeypatch):
     models = await catalog.fetch_models(Provider.ZAI, "zk")
     assert seen["url"] == "https://api.z.ai/api/paas/v4/models"
     assert models[0]["id"] == "glm-4.6"
+
+
+@pytest.mark.asyncio
+async def test_xai_routes_through_its_litellm_prefix(registry, monkeypatch):
+    xai = await registry.create(KeyCreate(provider=Provider.XAI, models=["grok-4"], key="kx"))
+    call = await _calls(monkeypatch, registry, xai.id, "grok-4")
+    assert call["model"] == "xai/grok-4"
+    assert call["api_base"] is None  # litellm's default is the xAI API
+
+
+@pytest.mark.asyncio
+async def test_xai_catalogue_uses_its_api_base(monkeypatch):
+    seen = {}
+
+    def handler(request):
+        seen["url"] = str(request.url)
+        return httpx.Response(200, json={"data": [{"id": "grok-4"}]})
+
+    _serve(monkeypatch, handler)
+    models = await catalog.fetch_models(Provider.XAI, "xk")
+    assert seen["url"] == "https://api.x.ai/v1/models"
+    assert models[0]["id"] == "grok-4"
 
 
 @pytest.mark.asyncio

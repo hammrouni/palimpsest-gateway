@@ -116,6 +116,7 @@ flowchart LR
 | `mistral` | Mistral | Mistral API key | Requests routed as `mistral/<model>`. Base URL override: `PALIMPSEST_MISTRAL_BASE_URL`. |
 | `groq` | Groq | `gsk_...` | Requests routed as `groq/<model>`. Base URL override: `PALIMPSEST_GROQ_BASE_URL`. |
 | `zai` | Z.ai (GLM) | Z.ai API key | Requests routed as `zai/<model>`. Set a key's `base_url` to `https://api.z.ai/api/coding/paas/v4` for the GLM coding plan. Base URL override: `PALIMPSEST_ZAI_BASE_URL`. |
+| `xai` | xAI (Grok) | xAI API key (`xai-...`) | Requests routed as `xai/<model>`. Served from `https://api.x.ai/v1`. Base URL override: `PALIMPSEST_XAI_BASE_URL`. |
 | `github` | GitHub Models | GitHub token with `models` access | Requests routed as `github/<model>`, models named like `openai/gpt-4.1`; served from `https://models.github.ai/inference`. Base URL override: `PALIMPSEST_GITHUB_BASE_URL`. |
 | `custom` | Any OpenAI-compatible endpoint | The endpoint's key | Each key sets its own `base_url` (the dashboard asks for it); `PALIMPSEST_CUSTOM_BASE_URL` is only the default for keys that set none. |
 

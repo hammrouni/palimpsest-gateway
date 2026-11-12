@@ -42,6 +42,7 @@ _MODEL_PREFIX: dict[Provider, str] = {
     Provider.MISTRAL: "mistral",
     Provider.GROQ: "groq",
     Provider.ZAI: "zai",
+    Provider.XAI: "xai",
     Provider.GITHUB: "github",
     Provider.CUSTOM: "openai",  # custom OpenAI-compatible endpoints use openai prefix
 }
@@ -117,6 +118,8 @@ def _api_base(provider: Provider, key_base_url: str | None = None) -> str | None
         return settings.groq_base_url or None
     if provider == Provider.ZAI:
         return settings.zai_base_url or None  # litellm's own default is the Z.ai API
+    if provider == Provider.XAI:
+        return settings.xai_base_url or None  # litellm's own default is the xAI API
     if provider == Provider.GITHUB:
         # litellm still defaults to GitHub's retired Azure endpoint.
         return settings.github_base_url or DEFAULT_BASE_URLS[Provider.GITHUB]

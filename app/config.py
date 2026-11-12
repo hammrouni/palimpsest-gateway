@@ -175,6 +175,7 @@ class Settings(BaseSettings):
     mistral_base_url: str | None = None
     groq_base_url: str | None = None
     zai_base_url: str | None = None
+    xai_base_url: str | None = None
     github_base_url: str | None = None
     # Default endpoint for ``custom`` keys that do not set their own base URL.
     custom_base_url: str | None = None

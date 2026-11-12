@@ -51,11 +51,11 @@ const CONFIG_FIELDS = [
 
 const NUMBER_FORMAT = new Intl.NumberFormat();
 
-const PROVIDERS = ['openai', 'anthropic', 'google', 'openrouter', 'mistral', 'groq', 'zai', 'github', 'custom'];
+const PROVIDERS = ['openai', 'anthropic', 'google', 'openrouter', 'mistral', 'groq', 'zai', 'xai', 'github', 'custom'];
 
 /* Providers whose endpoint a key may point elsewhere (the OpenAI-compatible ones),
    and where each one goes when no base URL is set. */
-const BASE_URL_PROVIDERS = ['openai', 'mistral', 'groq', 'zai', 'github', 'custom'];
+const BASE_URL_PROVIDERS = ['openai', 'mistral', 'groq', 'zai', 'xai', 'github', 'custom'];
 /* Placeholder text only: the bundle never loads anything from another origin (a test
    checks that no "http(s)://" literal appears here), so the scheme is added here. */
 const secure = (rest) => 'https' + '://' + rest;
@@ -64,6 +64,7 @@ const DEFAULT_ENDPOINTS = {
   mistral: secure('api.mistral.ai/v1'),
   groq: secure('api.groq.com/openai/v1'),
   zai: secure('api.z.ai/api/paas/v4'),
+  xai: secure('api.x.ai/v1'),
   github: secure('models.github.ai/inference'),
 };
 const KEY_STATES = ['active', 'exhausted', 'cooldown', 'suspended'];
@@ -2413,6 +2414,7 @@ const PROVIDER_NAMES = {
   mistral: 'Mistral',
   groq: 'Groq',
   zai: 'Z.ai (GLM)',
+  xai: 'xAI (Grok)',
   github: 'GitHub Models',
   custom: 'Custom (OpenAI-compatible)',
 };
