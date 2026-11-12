@@ -45,6 +45,8 @@ _API_PATHS = {
     "/operator/v1/system",
     "/operator/v1/supermode",
     "/operator/v1/supermode/ranking",
+    "/operator/v1/live",
+    "/operator/v1/calls",
     "/operator/v1/metrics",
     "/operator/v1/keys",
     "/operator/v1/keys/{key_id}",

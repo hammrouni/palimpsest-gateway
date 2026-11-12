@@ -88,6 +88,12 @@ const SECTIONS = [
     render: renderOverview,
   },
   {
+    id: 'live',
+    label: 'Live Flow',
+    endpoints: ['/operator/v1/live'],
+    render: renderLive,
+  },
+  {
     id: 'supermode',
     label: 'Supermode',
     endpoints: ['/operator/v1/supermode', '/operator/v1/supermode/ranking'],
@@ -169,7 +175,7 @@ const SECTIONS = [
 
 /* Sidebar grouping by theme; every section id appears exactly once. */
 const NAV_GROUPS = [
-  { title: 'Monitoring', ids: ['overview', 'supermode', 'performance', 'alerts'] },
+  { title: 'Monitoring', ids: ['overview', 'live', 'supermode', 'performance', 'alerts'] },
   { title: 'Key pool', ids: ['pool-keys', 'utilization-failover'] },
   { title: 'Users', ids: ['users', 'sessions'] },
   { title: 'Activity & costs', ids: ['usage', 'requests', 'costs'] },
@@ -181,6 +187,7 @@ const NAV_ICONS = {
   overview: [['rect', {x: '3', y: '3', width: '7', height: '9', rx: '1.5'}], ['rect', {x: '14', y: '3', width: '7', height: '5', rx: '1.5'}], ['rect', {x: '14', y: '12', width: '7', height: '9', rx: '1.5'}], ['rect', {x: '3', y: '16', width: '7', height: '5', rx: '1.5'}]],
   performance: [['path', {d: 'M3 12h4l3-8 4 16 3-8h4'}]],
   supermode: [['path', {d: 'M13 2 4 14h7l-1 8 9-12h-7z'}]],
+  live: [['circle', {cx: '12', cy: '12', r: '2'}], ['path', {d: 'M16.2 7.8a6 6 0 0 1 0 8.4M7.8 16.2a6 6 0 0 1 0-8.4M19 5a10 10 0 0 1 0 14M5 19a10 10 0 0 1 0-14'}]],
   alerts: [['path', {d: 'M6 8a6 6 0 0 1 12 0c0 7 3 9 3 9H3s3-2 3-9'}], ['path', {d: 'M10.3 21a1.94 1.94 0 0 0 3.4 0'}]],
   'pool-keys': [['circle', {cx: '7.5', cy: '15.5', r: '4.5'}], ['path', {d: 'm10.7 12.3 9.8-9.8M16 7l3 3M14 9l2 2'}]],
   'utilization-failover': [['path', {d: 'M3 3v18h18'}], ['path', {d: 'M7 15v3M12 10v8M17 6v12'}]],

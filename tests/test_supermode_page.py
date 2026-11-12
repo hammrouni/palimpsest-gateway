@@ -214,8 +214,11 @@ async def test_the_dashboard_serves_the_supermode_page(client):
     assert page.status_code == 200 and "javascript" in page.headers["content-type"]
     html = (await client.get("/dashboard/")).text
     assert html.index("insights.js") < html.index("supermode.js") < html.index("app.js")
-    for sink in ("innerHTML", "outerHTML", "insertAdjacentHTML", "document.write", "console.", "eval("):
-        assert sink not in page.text, sink
+    assert html.index("live.js") < html.index("livehistory.js") < html.index("app.js")
+    for name in ("supermode.js", "live.js", "livehistory.js"):
+        text = (await client.get(f"/dashboard/{name}")).text
+        for sink in ("innerHTML", "outerHTML", "insertAdjacentHTML", "document.write", "console.", "eval("):
+            assert sink not in text, (name, sink)
     shell = pathlib.Path("app/static/dashboard/app.js").read_text(encoding="utf-8")
     assert "id: 'supermode'" in shell and "render: renderSupermode" in shell
     assert "'supermode'" in shell[shell.index("const NAV_GROUPS") :]

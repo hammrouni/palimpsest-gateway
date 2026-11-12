@@ -27,6 +27,16 @@ drift. The running version is shown in the dashboard's **System** section and in
   rate-limit headers gets a learned requests-per-minute limit, and keys at it are
   tried last so other requests go elsewhere first. A supermode request refused for a
   missing capability moves to the next model instead of failing.
+- Live Flow page in the dashboard: requests drawn as one dot per request travelling from
+  a client through the gateway to a provider and model and back (it waits, pulsing, for
+  the answer and turns red on a refusal), glowing wires, a plain-words list of the latest
+  steps and the requests in flight. A history under it with Calls (one row per request,
+  with every provider, key and model it tried, filters, pages and a detail dialog), Steps
+  (filters and pages) and Keys by model (each key that can serve a model with its state,
+  calls and success rate). The gateway now keeps a record of every call, with the keys
+  and models it tried, whether or not the page is open (the newest
+  `usage_recent_max`), at `GET /operator/v1/calls`. Steps are recorded only while the page
+  is open and carry no message content. `GET /operator/v1/live`.
 - Supermode page in the dashboard: how it works and how a model is scored, a live
   ranking for a request of any size, with or without images or tools (every model with
   its score, context window, keys ready, what was learned, and why it was left out),

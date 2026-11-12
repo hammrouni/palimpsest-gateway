@@ -363,6 +363,36 @@ The statistics start when supermode is first used after this version is installe
 
 `master_model` still wins: with it set, supermode requests go to the master like any other. The pick is made per request, so two turns of one session can be answered by different models when capacity changes between them.
 
+### Live Flow
+
+The **Live Flow** page (Monitoring group) shows requests as they happen, like signals on a wire: a request leaves a client, enters the gateway, is sent to a provider and model, and the answer comes back.
+
+- **The diagram:** clients on the left (named as on the Users page), the gateway in the middle, the providers of your pool on the right, each with the models it served lately. Every request is **one dot** that makes the whole trip:
+  1. **blue**: leaves the client and enters the gateway;
+  2. **cyan**: goes on to a provider and model, and **pulses** while it waits for the answer;
+  3. **green**: the answer comes back to the gateway (it pulses there while a streamed reply is still running), then the dot returns to the client and disappears;
+  4. **red**: the provider refused or failed. If the gateway tries another model or key, the dot turns cyan again and goes to that provider.
+
+  A wire **glows and moves** while a request is on it, and the client and provider nodes light up. The gateway shows how the last request was routed (`supermode → model`, or the model asked for). If the page falls behind or the browser stops drawing frames, dots catch up by jumping instead of replaying old moves. **Slow motion** makes the dots about 2.5 times slower to follow them. With reduced motion set in the browser, dots jump instead of travelling and the wires stay still.
+- **What is happening now:** the last six steps, written as plain sentences, for example "The gateway sends it to Google, model gemini-3.1-flash-lite, with key Google1".
+- **In flight:** the requests being served now, what each is waiting for (the gateway, a provider and model, a retry) and how long each has been open. A streamed request stays open until the client has read the whole reply.
+- **Cards:** requests in flight, requests started in the last minute, the share answered and the average time of the last 50 finished requests.
+- **Buttons:** **Slow motion** makes the dots about 2.5 times slower. **Pause** freezes the page, and **Resume** shows what piled up without replaying it. **Reload history** loads the call history and the key list again.
+
+#### History
+
+Under the diagram, three tabs hold the history. Every table has filters and pages (10 to 100 rows) and the filters you set stay while the page is open.
+
+- **Calls:** one row per request, newest first, with the time, the client, what it asked for (with a badge when supermode or a master model routed it, and how many times it moved to another model), **every provider, key and model it was sent to** in order with ✓ or ✗, the status and time of each try, the result, the total time, the first-chunk time and the tokens in and out. Filter by words (request id, model, key, client), result (answered, failed, running now, retried or moved on), client and provider. **Details** opens the request: its fields and a timeline of its steps, with how long each try took.
+- **Steps:** the individual steps (request in, sent out, answer or refusal, moves on, response) of the requests seen while the page is open, the last 500. Filter by step and by words. A request id opens the call.
+- **Keys by model:** one group per model, and in it every key that can serve that model with the key's state now (available, paused, out of quota, suspended), how many calls it took, how many were answered and failed, its success rate, the average answer time, how many are in flight, when it was last used and how the last try went. A key that can serve a model but has not been asked shows zero calls. Filter by model or key, by provider, and to the keys that were used.
+
+The call history is **kept by the gateway for every request, whether or not this page is open**, as a list of the newest `PALIMPSEST_USAGE_RECENT_MAX` calls (500 by default, the same limit as the Requests page), so the page shows what happened before you opened it. `GET /operator/v1/calls?limit=N&account_id=…` returns it, up to 1000 calls. A failed or refused request is in it too, with an empty list of tries when no provider was reached.
+
+The diagram and the **Steps** tab come from `GET /operator/v1/live`, polled once a second; the first poll returns the newest events and each next one only what is new (`after=<cursor>`). **Steps are recorded only while a page is open**: each poll keeps the recording on for 20 seconds, and a request checks that once when it starts. A request that began before the page opened is not drawn, though it is in **Calls**. With the page closed, the cost is one cheap check per request. At most 600 steps are kept.
+
+Only metadata appears: account, key, provider and model names, status codes, token counts and timings. Never prompts, replies or keys, whatever `request_log_prompts` says.
+
 ### Testing a key
 
 After adding a key, check that it answers: **Test** on its row in Pool Keys (or the API) sends one tiny real request through it, using the same endpoint and model mapping as live traffic, and reports the result.

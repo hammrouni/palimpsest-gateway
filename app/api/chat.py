@@ -44,6 +44,7 @@ from app.logging.request_logger import log_request
 from app.pool.registry import PoolRegistry
 from app.pool.tokens import add_tokens
 from app.provider.adapter import AttemptResult
+from app.router import live as live_feed
 from app.router.exhaustion import PoolExhaustedError, render_exhausted, render_fatal
 from app.router.failover import FailoverTrace, capacity_refusal, execute_with_failover
 from app.router.learning import Needs, model_refused, record_request_refused
@@ -66,6 +67,7 @@ from app.session.policy import (
 from app.session.store import SessionStore
 from app.settlement import SettlementInput, admit, refund, settle
 from app.store.redis_store import RedisStore
+from app.usage.calls import record as record_call
 from app.usage.store import SERVED_OUTCOMES, UsageStore, track
 
 router = APIRouter(prefix="/v1", tags=["chat"])
@@ -222,9 +224,21 @@ class _Turn:
     # Supermode statistics: the model first picked and each move to another one.
     picked: str | None = None
     hops: list[dict] = field(default_factory=list)
+    # The Live Flow page is open: send it what this request does, as it happens.
+    live: bool = False
+    # For the call history: what the client asked for and how it was routed.
+    requested: str = ""
+    routed_by: str | None = None
+    tools: bool = False
+    started_wall: float = field(default_factory=time.time)
 
     def latency_ms(self) -> int:
         return int((time.monotonic() - self.started) * 1000)
+
+    def emit(self, event: dict) -> None:
+        """Send one event to the Live Flow page, if it is open (never delays the request)."""
+        if self.live:
+            track(live_feed.emit(self.redis, {"rid": self.request_id, **event}))
 
     def headers(self) -> dict[str, str]:
         headers = {"X-Request-ID": self.request_id}
@@ -244,6 +258,14 @@ class _Turn:
     ) -> None:
         """One request-log record and one usage record per terminal outcome."""
         attempts = trace.attempts if trace is not None else ()
+        self.emit({
+            "kind": "done", "status_code": status_code, "outcome": outcome,
+            "latency_ms": self.latency_ms(), "model": self.model, "stream": self.stream,
+            "provider": next((a.provider.value for a in reversed(attempts)), None),
+            "attempts": len(attempts), "ttft_ms": self.first_chunk_ms,
+            "prompt_tokens": self.prompt_tokens, "completion_tokens": self.completion_tokens,
+        })
+        track(self._record_call(status_code, outcome, attempts))
         if self.supermode:
             track(self._record_supermode(status_code, outcome, attempts))
         log_request(
@@ -282,6 +304,43 @@ class _Turn:
                 # The provider that served it, or the last one tried.
                 next((a.provider.value for a in reversed(attempts)), None),
             )
+        )
+
+    async def _record_call(self, status_code: int, outcome: str, attempts: tuple) -> None:
+        """The call history: this request and every key and model it tried."""
+        await record_call(
+            self.redis,
+            {
+                "rid": self.request_id,
+                "t0": int(self.started_wall * 1000),
+                "t1": int(time.time() * 1000),
+                "account_id": self.account_id,
+                "requested": self.requested,
+                "model": self.model,
+                "routed_by": self.routed_by,
+                "stream": self.stream,
+                "tools": self.tools,
+                "status_code": status_code,
+                "outcome": outcome,
+                "latency_ms": self.latency_ms(),
+                "ttft_ms": self.first_chunk_ms,
+                "prompt_tokens": self.prompt_tokens,
+                "completion_tokens": self.completion_tokens,
+                "attempts": [
+                    {
+                        "key_id": a.key_id,
+                        "provider": a.provider.value,
+                        "model": a.model,
+                        "ok": a.outcome == "success",
+                        "status_code": a.status_code,
+                        "classification": a.classification,
+                        "ms": a.ms,
+                    }
+                    for a in attempts
+                    if a.outcome != "skipped"
+                ],
+                "hops": self.hops,
+            },
         )
 
     async def _record_supermode(self, status_code: int, outcome: str, attempts: tuple) -> None:
@@ -641,6 +700,7 @@ async def _run_failover(
                 provider_messages,
                 session=session_ref,
                 rebuild_hook=rebuild_hook,
+                observer=turn.emit if turn.live else None,
                 **extra,
                 **_provider_kwargs(request),
             )
@@ -654,6 +714,7 @@ async def _run_failover(
                     turn.request_id, model, following,
                 )
                 turn.hops.append({"from": model, "to": following, "cause": "exhausted"})
+                turn.emit({"kind": "hop", **turn.hops[-1]})
                 model = following
                 continue
             if exc.trace is not None:
@@ -682,6 +743,7 @@ async def _run_failover(
                     turn.request_id, model, following, cause,
                 )
                 turn.hops.append({"from": model, "to": following, "cause": cause})
+                turn.emit({"kind": "hop", **turn.hops[-1]})
                 model = following
                 continue
         if earlier:
@@ -905,6 +967,7 @@ async def chat_completions(
     """
     # A valid client X-Request-ID is echoed but never used as the settlement
     # idempotency key, so a reused ID cannot look like a duplicate settlement.
+    requested_model = request.model
     served_model = await effective_model(PoolRegistry(store.redis), request.model)
     if served_model != request.model:
         # A master model is on: it serves the request, whatever the client asked.
@@ -938,7 +1001,17 @@ async def chat_completions(
         supermode=supermode,
         needs=needs,
         picked=picked,
+        live=await live_feed.watching(store.redis),
+        requested=requested_model[:120],
+        routed_by="supermode" if supermode else ("master" if served_model != requested_model else None),
+        tools=bool(request.tools),
     )
+
+    turn.emit({
+        "kind": "request", "account_id": account["id"], "requested": turn.requested,
+        "model": request.model, "stream": request.stream,
+        "routed_by": turn.routed_by, "tools": turn.tools,
+    })
 
     await _admit(turn)
     metadata = await _bind_session(turn, x_session_id)

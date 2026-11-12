@@ -9,6 +9,7 @@ from __future__ import annotations
 import asyncio
 import logging
 import time
+from collections.abc import Callable
 from dataclasses import dataclass
 from datetime import UTC, datetime
 
@@ -145,6 +146,9 @@ class AttemptRecord:
     outcome: str  # "success" | "failed" | "skipped"
     status_code: int | None
     timestamp: float | None = None
+    # The model asked of that key and how long the attempt took; for the call history.
+    model: str | None = None
+    ms: int | None = None
 
 
 @dataclass(frozen=True)
@@ -158,6 +162,16 @@ class FailoverTrace:
     classification: Classification | None = None
     start_time: float | None = None
     end_time: float | None = None
+
+
+def _notify(observer: Callable[[dict], None] | None, event: dict) -> None:
+    """Tell the live view about an attempt; whatever it does cannot touch the request."""
+    if observer is None:
+        return
+    try:
+        observer(event)
+    except Exception:
+        logger.debug("live observer failed", exc_info=True)
 
 
 async def _earliest_next_reset(registry: PoolRegistry, model: str) -> datetime | None:
@@ -246,6 +260,7 @@ async def execute_with_failover(
     session: object | None = None,
     rebuild_hook: RebuildHook | None = None,
     first_byte_committed: bool = False,
+    observer: Callable[[dict], None] | None = None,
     **params: object,
 ) -> tuple[AttemptResult, FailoverTrace]:
     """Run the bounded failover loop for one logical request.
@@ -256,6 +271,10 @@ async def execute_with_failover(
     with ``.trace`` attached, when no key is left or the budget is spent.
 
     The whole loop stops once ``2 * provider_timeout`` seconds have passed.
+
+    ``observer``, if given, is called (never awaited, errors ignored) with an
+    ``attempt`` event before each provider call and a ``result`` event after it,
+    for the live view; it cannot change the outcome.
     """
     hook = rebuild_hook or identity_rebuild
     settings = get_settings()
@@ -296,6 +315,11 @@ async def execute_with_failover(
             )
 
         await note_attempt(registry.redis, candidate.key_id)
+        _notify(observer, {
+            "kind": "attempt", "n": len(attempts) + 1, "key_id": candidate.key_id,
+            "provider": candidate.provider.value, "model": model,
+        })
+        attempt_started = time.monotonic()
         try:
             result = await adapter_attempt(registry, candidate.key_id, model, messages, **params)
         except CandidateGoneError:
@@ -315,6 +339,16 @@ async def execute_with_failover(
         if result.ok and params.get("stream"):
             result = await _prime_stream(result, candidate.provider)
 
+        attempt_ms = int((time.monotonic() - attempt_started) * 1000)
+        _notify(observer, {
+            "kind": "result", "key_id": candidate.key_id, "provider": candidate.provider.value,
+            "model": model, "ok": result.ok,
+            "status_code": None if result.ok else result.error.status_code,
+            "classification": None if result.ok else classify(result.error).state,
+            "cause": None if result.ok else pause_reason(result.error),
+            "ms": attempt_ms,
+        })
+
         if result.ok:
             await record_success(
                 registry.redis, model, candidate.key_id, needs_from_params(messages, params)
@@ -327,6 +361,8 @@ async def execute_with_failover(
                     outcome="success",
                     status_code=None,
                     timestamp=time.monotonic(),
+                    model=model,
+                    ms=attempt_ms,
                 )
             )
             trace = FailoverTrace(
@@ -418,6 +454,8 @@ async def execute_with_failover(
                 outcome="failed",
                 status_code=result.error.status_code,
                 timestamp=time.monotonic(),
+                model=model,
+                ms=attempt_ms,
             )
         )
         excluded.add(candidate.key_id)

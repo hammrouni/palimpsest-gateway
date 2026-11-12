@@ -1664,3 +1664,358 @@ h4 {
 .sm-path {
   overflow-wrap: anywhere;
 }
+
+/* -- live flow ---------------------------------------------------------------- */
+
+.lf-diagram {
+  display: block;
+  width: 100%;
+  height: auto;
+  font-family: inherit;
+}
+
+.lf-node {
+  fill: var(--surface);
+  stroke: var(--border);
+  stroke-width: 2;
+  transition: stroke 0.25s, stroke-width 0.25s;
+}
+
+.lf-node--gateway {
+  fill: var(--accent-soft);
+  stroke: var(--accent);
+  stroke-width: 2.5;
+}
+
+.lf-node.is-hot {
+  stroke: var(--brand-blue);
+  stroke-width: 4;
+}
+
+.lf-node.is-good {
+  stroke: var(--ok);
+  stroke-width: 4;
+}
+
+.lf-node.is-bad {
+  stroke: var(--error);
+  stroke-width: 4;
+}
+
+.lf-node.is-warn {
+  stroke: var(--brand-orange);
+  stroke-width: 4;
+}
+
+.lf-label {
+  fill: var(--text);
+  font-size: 16px;
+  font-weight: 700;
+}
+
+.lf-sub {
+  fill: var(--muted);
+  font-size: 13px;
+}
+
+.lf-route {
+  fill: var(--accent-soft-text);
+  font-size: 14px;
+  font-weight: 700;
+}
+
+.lf-caption {
+  fill: var(--muted);
+  font-size: 12px;
+  font-weight: 700;
+  letter-spacing: 0.06em;
+}
+
+.lf-caption--soft {
+  font-weight: 400;
+  letter-spacing: 0;
+}
+
+.lf-wire {
+  stroke: var(--border);
+  stroke-width: 3;
+  stroke-linecap: round;
+  transition: stroke 0.25s;
+}
+
+.lf-wire.is-busy {
+  stroke-width: 4;
+  stroke-dasharray: 10 8;
+  animation: lf-flow 0.7s linear infinite;
+}
+
+.lf-wire.is-busy--req {
+  stroke: var(--brand-blue);
+}
+
+.lf-wire.is-busy--try {
+  stroke: var(--brand-cyan);
+}
+
+@keyframes lf-flow {
+  to {
+    stroke-dashoffset: -18;
+  }
+}
+
+.lf-token {
+  stroke: var(--surface);
+  stroke-width: 3;
+  transform-box: fill-box;
+  transform-origin: center;
+}
+
+.lf-token--req {
+  fill: var(--brand-blue);
+}
+
+.lf-token--try {
+  fill: var(--brand-cyan);
+}
+
+.lf-token--ok {
+  fill: var(--ok);
+}
+
+.lf-token--err {
+  fill: var(--error);
+}
+
+.lf-token.is-waiting {
+  animation: lf-pulse 1s ease-in-out infinite;
+}
+
+@keyframes lf-pulse {
+  50% {
+    opacity: 0.55;
+    transform: scale(1.6);
+  }
+}
+
+.lf-legend {
+  margin-top: 10px;
+}
+
+.lf-key {
+  display: inline-block;
+  width: 12px;
+  height: 12px;
+  margin-right: 6px;
+  border-radius: 999px;
+}
+
+.lf-key--req {
+  background: var(--brand-blue);
+}
+
+.lf-key--try {
+  background: var(--brand-cyan);
+}
+
+.lf-key--ok {
+  background: var(--ok);
+}
+
+.lf-key--err {
+  background: var(--error);
+}
+
+.lf-now {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.lf-now-row {
+  display: grid;
+  grid-template-columns: 92px 104px 1fr;
+  gap: 10px;
+  align-items: center;
+  padding: 7px 10px;
+  font-size: 13px;
+  background: var(--bg);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  opacity: 0.75;
+}
+
+.lf-now-row.is-newest {
+  font-weight: 600;
+  opacity: 1;
+  border-color: var(--accent);
+}
+
+.lf-now-time {
+  color: var(--muted);
+  font-family: ui-monospace, monospace;
+  font-size: 12px;
+}
+
+.lf-split {
+  display: grid;
+  grid-template-columns: minmax(0, 3fr) minmax(0, 2fr);
+  gap: 16px;
+  align-items: start;
+}
+
+@media (max-width: 1100px) {
+  .lf-split {
+    grid-template-columns: minmax(0, 1fr);
+  }
+}
+
+@media (max-width: 760px) {
+  .lf-now-row {
+    grid-template-columns: 1fr;
+    gap: 4px;
+  }
+}
+
+.lf-summary .metric {
+  padding: 10px 14px;
+}
+
+.lf-summary .metric-value {
+  font-size: 22px;
+}
+
+.lf-tabs {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px;
+  margin: 0 0 12px;
+  border-bottom: 1px solid var(--border);
+}
+
+.lf-tab {
+  padding: 8px 14px;
+  color: var(--muted);
+  font: inherit;
+  font-weight: 600;
+  background: none;
+  border: 0;
+  border-bottom: 3px solid transparent;
+  cursor: pointer;
+}
+
+.lf-tab:hover {
+  color: var(--text);
+}
+
+.lf-tab.is-active {
+  color: var(--accent);
+  border-bottom-color: var(--accent);
+}
+
+.lf-tab:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: -2px;
+}
+
+.lf-tools {
+  margin-bottom: 10px;
+}
+
+.lf-history-body {
+  min-width: 0;
+}
+
+.lf-tries {
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+  min-width: 260px;
+}
+
+.lf-try {
+  display: flex;
+  gap: 6px;
+  align-items: baseline;
+  font-size: 13px;
+}
+
+.lf-try-mark {
+  flex: 0 0 auto;
+  font-weight: 700;
+}
+
+.lf-try-mark--ok {
+  color: var(--ok);
+}
+
+.lf-try-mark--bad {
+  color: var(--error);
+}
+
+.lf-try-mark--wait {
+  color: var(--warn);
+}
+
+.lf-try-note {
+  color: var(--muted);
+  font-size: 12px;
+  white-space: nowrap;
+}
+
+.lf-result {
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+  align-items: flex-start;
+  min-width: 130px;
+}
+
+.lf-result-note {
+  color: var(--muted);
+  font-size: 12px;
+  white-space: nowrap;
+}
+
+.lf-wrap {
+  display: block;
+  min-width: 240px;
+  white-space: normal;
+}
+
+.lf-asked {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  align-items: center;
+}
+
+.lf-modal-title {
+  margin: 0;
+  font-size: 14px;
+}
+
+.link-button {
+  padding: 0;
+  color: var(--accent);
+  font: inherit;
+  font-family: ui-monospace, monospace;
+  text-decoration: underline;
+  background: none;
+  border: 0;
+  cursor: pointer;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .lf-node,
+  .lf-wire {
+    transition: none;
+  }
+
+  .lf-wire.is-busy,
+  .lf-token.is-waiting {
+    animation: none;
+  }
+}
