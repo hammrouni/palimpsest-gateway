@@ -201,20 +201,35 @@ const NAV_ICONS = {
   configuration: [['path', {d: 'M4 6h10M18 6h2M4 12h2M10 12h10M4 18h12M20 18h0'}], ['circle', {cx: '16', cy: '6', r: '2'}], ['circle', {cx: '8', cy: '12', r: '2'}], ['circle', {cx: '18', cy: '18', r: '2'}]],
 };
 
+/* Action icons, same 24x24 stroke grid as the sidebar. */
+const UI_ICONS = {
+  refresh: [['path', {d: 'M20 11a8 8 0 0 0-14.6-4.5L4 8'}], ['path', {d: 'M4 3v5h5'}], ['path', {d: 'M4 13a8 8 0 0 0 14.6 4.5L20 16'}], ['path', {d: 'M20 21v-5h-5'}]],
+  plus: [['path', {d: 'M12 5v14M5 12h14'}]],
+  close: [['path', {d: 'M6 6l12 12M18 6 6 18'}]],
+};
+
 function navIcon(id) {
-  const icon = el('span', 'nav-icon');
+  return strokeIcon(NAV_ICONS[id], 18, 'nav-icon');
+}
+
+function uiIcon(name, size = 16) {
+  return strokeIcon(UI_ICONS[name], size, 'ui-icon');
+}
+
+function strokeIcon(shapes, size, className) {
+  const icon = el('span', className);
   icon.setAttribute('aria-hidden', 'true');
   const ns = 'http:' + '//www.w3.org/2000/svg';
   const svg = document.createElementNS(ns, 'svg');
   svg.setAttribute('viewBox', '0 0 24 24');
-  svg.setAttribute('width', '18');
-  svg.setAttribute('height', '18');
+  svg.setAttribute('width', String(size));
+  svg.setAttribute('height', String(size));
   svg.setAttribute('fill', 'none');
   svg.setAttribute('stroke', 'currentColor');
   svg.setAttribute('stroke-width', '1.8');
   svg.setAttribute('stroke-linecap', 'round');
   svg.setAttribute('stroke-linejoin', 'round');
-  for (const [tag, attrs] of NAV_ICONS[id] || []) {
+  for (const [tag, attrs] of shapes || []) {
     const shape = document.createElementNS(ns, tag);
     for (const [name, value] of Object.entries(attrs)) {
       shape.setAttribute(name, value);
@@ -394,8 +409,14 @@ function withPager(table, bar) {
   return bar ? [table, bar] : [table];
 }
 
+/* A label written '+ Add key' gets a drawn plus icon instead of the glyph. */
 function button(label, className, onClick) {
-  const node = el('button', className, label);
+  const node = el('button', className);
+  if (label.startsWith('+ ')) {
+    node.append(uiIcon('plus'), label.slice(2));
+  } else {
+    node.textContent = label;
+  }
   node.type = 'button';
   if (onClick) {
     node.addEventListener('click', onClick);
@@ -404,7 +425,8 @@ function button(label, className, onClick) {
 }
 
 function refreshButton(onClick, label = 'Refresh') {
-  const node = button('↻ ' + label, 'ghost', onClick);
+  const node = button(label, 'ghost', onClick);
+  node.prepend(uiIcon('refresh', 15));
   node.title = 'Load the latest data';
   return node;
 }
@@ -417,22 +439,29 @@ function mountPage(view, { title, description, status, actions = [], tools = [],
   const titleBlock = el('div', 'page-title');
   titleBlock.append(el('h2', null, title));
   if (description) {
-    titleBlock.append(el('p', 'page-description', description));
+    /* Kept to one line on a wide screen; the full text stays in the tooltip. */
+    const text = el('p', 'page-description', description);
+    text.title = description;
+    titleBlock.append(text);
   }
   titleBlock.append(status.node);
 
   const actionBar = el('div', 'page-actions');
   actionBar.append(...actions);
 
+  /* Title on the left; filters, then the page's buttons, on the right. A page
+     with three or more filters moves them to a toolbar row of its own under the
+     title (decided in CSS, so filters added after mounting count too). */
   const head = el('header', 'page-head');
-  head.append(titleBlock, actionBar);
-
-  const parts = [head];
+  head.append(titleBlock);
   if (tools.length) {
     const toolbar = el('div', 'page-tools');
     toolbar.append(...tools);
-    parts.push(toolbar);
+    head.append(toolbar);
   }
+  head.append(actionBar);
+
+  const parts = [head];
   const body = el('div', 'page-body');
   body.append(...content);
   parts.push(body);
@@ -465,7 +494,8 @@ function openModal({ title, content, primary = null, cancelLabel = 'Cancel', wid
 
   const heading = el('h3', null, title);
   heading.id = 'modal-title';
-  const dismiss = button('×', 'icon-button', closeModal);
+  const dismiss = button('', 'icon-button', closeModal);
+  dismiss.append(uiIcon('close', 18));
   dismiss.setAttribute('aria-label', 'Close');
   const head = el('header', 'modal-head');
   head.append(heading, dismiss);
@@ -646,7 +676,27 @@ function renderNav(activeId) {
     return wrap;
   });
   els.nav.replaceChildren(...groups);
+  const active = SECTIONS.find((candidate) => candidate.id === activeId);
+  document.getElementById('nav-toggle-label').textContent = active ? active.label : 'Menu';
+  setNavOpen(false);
 }
+
+/* On a narrow screen the section list folds behind a menu button in the top bar. */
+function setNavOpen(open) {
+  els.app.classList.toggle('nav-open', open);
+  document.getElementById('nav-toggle').setAttribute('aria-expanded', String(open));
+}
+
+document.getElementById('nav-toggle').addEventListener('click', () => {
+  setNavOpen(!els.app.classList.contains('nav-open'));
+});
+
+document.addEventListener('keydown', (event) => {
+  if (event.key === 'Escape' && els.app.classList.contains('nav-open')) {
+    setNavOpen(false);
+    document.getElementById('nav-toggle').focus();
+  }
+});
 
 function renderPlaceholder(section) {
   const heading = el('h2', null, section.label);
@@ -1787,7 +1837,8 @@ function buildModelPicker(input, load) {
       ...ids.map((id) => {
         const chip = el('span', 'chip');
         chip.append(el('span', 'chip__text', id));
-        const remove = el('button', 'chip__remove', '×');
+        const remove = el('button', 'chip__remove');
+        remove.append(uiIcon('close', 12));
         remove.type = 'button';
         remove.title = 'Remove ' + id;
         remove.setAttribute('aria-label', 'Remove ' + id);
@@ -3226,7 +3277,10 @@ function dataTable(columns, rows, emptyMessage, group = null, paging = null) {
   );
   const table = tableOf(head, body);
   if (!paging) {
-    return table;
+    /* A table wider than a phone scrolls sideways in its own box, not the page. */
+    const scroller = el('div', 'table-scroll');
+    scroller.append(table);
+    return scroller;
   }
   const fragment = document.createDocumentFragment();
   fragment.append(...withPager(table, pagerBar(paging.pager, total, paging.noun, paging.redraw)));
