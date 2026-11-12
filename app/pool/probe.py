@@ -16,7 +16,12 @@ from typing import Any
 from app.core.redact import redact
 from app.pool.registry import KeyNotFoundError, PoolRegistry
 from app.provider.adapter import ProviderAttemptError, attempt
-from app.router.classify import classify, is_connectivity_error, pause_reason
+from app.router.classify import (
+    classify,
+    is_connectivity_error,
+    model_quota_limit,
+    pause_reason,
+)
 
 PROBE_PROMPT = "Reply with the single word: ok"
 _PROBE_MAX_TOKENS = 16
@@ -64,6 +69,11 @@ def _verdict(error: ProviderAttemptError) -> str:
     if state == "rejected":
         return "key_rejected"
     if state == "model_scoped":
+        quota = model_quota_limit(error)
+        if quota == 0:
+            return "no_credits"  # the plan has no quota for this model at all
+        if quota is not None:
+            return "rate_limited"  # this model's own quota, back after the reset
         return "model_not_found"
     if state == "exhausted":
         return "no_credits"

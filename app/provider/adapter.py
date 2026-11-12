@@ -95,6 +95,10 @@ def _mapped_model(provider: Provider, model: str) -> str:
     return f"{_MODEL_PREFIX[provider]}/{model}"
 
 
+# Providers whose API takes ``max_completion_tokens`` as sent.
+_MAX_COMPLETION_TOKENS_PROVIDERS = frozenset({Provider.OPENAI, Provider.OPENROUTER, Provider.GITHUB})
+
+
 def _api_base(provider: Provider, key_base_url: str | None = None) -> str | None:
     """Where this attempt goes: the key's own base URL, else the provider's setting/default."""
     settings = get_settings()
@@ -186,6 +190,13 @@ async def _attempt_once(
     if unknown:
         logger.debug("dropping unrecognized litellm params: %s", unknown)
 
+    # max_completion_tokens is OpenAI's newer name; most other APIs (Z.ai, Groq,
+    # Mistral, ...) only know max_tokens and litellm refuses the request before
+    # sending it. Send the limit under the name the provider takes.
+    if provider not in _MAX_COMPLETION_TOKENS_PROVIDERS and "max_completion_tokens" in filtered_params:
+        limit = filtered_params.pop("max_completion_tokens")
+        filtered_params.setdefault("max_tokens", limit)
+
     # Gemini 3+ warns that temperature, top_p and top_k are being removed. Drop them
     # for every gemini- model here, not only 3+, so the request stays uniform.
     if provider == Provider.GOOGLE and model.startswith("gemini-"):
@@ -209,6 +220,9 @@ async def _attempt_once(
             messages=messages,
             # litellm's own default is 6000s, holding the session lock throughout.
             timeout=timeout,
+            # A param this provider does not take is dropped, not a 400: the
+            # client sent a valid OpenAI request and another key may need it.
+            drop_params=True,
             **filtered_params,
         )
         hidden = getattr(response, "_hidden_params", None) or {}
