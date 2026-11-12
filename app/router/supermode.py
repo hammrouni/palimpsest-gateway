@@ -53,6 +53,20 @@ def needs_of(request: ChatCompletionRequest) -> Needs:
     )
 
 
+def _profile_of(model: str) -> ModelProfile:
+    """The built-in profile, with the operator's ``supermode_profiles`` laid over it."""
+    base = profile_for(model)
+    override = get_settings().supermode_profiles.get(model)
+    if not override:
+        return base
+    return ModelProfile(
+        quality=base.quality,
+        context=override["context"] if "context" in override else base.context,
+        vision=override["vision"] if "vision" in override else base.vision,
+        tools=override["tools"] if "tools" in override else base.tools,
+    )
+
+
 def _with_learned(profile: ModelProfile, learned: Learned) -> ModelProfile:
     """The built-in profile corrected by what traffic has proven."""
     return ModelProfile(
@@ -110,7 +124,7 @@ async def rank_models(
     contenders = []
     for model in served:
         facts = learned[model]
-        profile = _with_learned(profile_for(model), facts)
+        profile = _with_learned(_profile_of(model), facts)
         if _fits(profile, needs):
             contenders.append((_quality(model, profile) - facts.penalty(), model))
     contenders.sort(key=lambda item: (-item[0], item[1]))
@@ -119,7 +133,7 @@ async def rank_models(
     for _quality_tier, tier in groupby(contenders, key=lambda item: item[0]):
         scored = []
         for _, model in tier:
-            candidates = await select_candidates(registry, model)
+            candidates = await select_candidates(registry, model, records=records)
             if candidates:
                 scored.append((-_capacity(candidates), model))
         ranked.extend(model for _, model in sorted(scored))
@@ -170,7 +184,7 @@ async def explain_ranking(registry: PoolRegistry, needs: Needs) -> list[RankEntr
     entries: list[RankEntry] = []
     for model in sorted(providers):
         facts = learned[model]
-        base = profile_for(model)
+        base = _profile_of(model)
         profile = _with_learned(base, facts)
         reason = None
         if needs.vision and not profile.vision:
@@ -181,7 +195,7 @@ async def explain_ranking(registry: PoolRegistry, needs: Needs) -> list[RankEntr
             reason = "context"
         candidates = []
         if reason is None:
-            candidates = await select_candidates(registry, model)
+            candidates = await select_candidates(registry, model, records=records)
             if not candidates:
                 reason = "no_key_ready"
         capacity = _capacity(candidates) if candidates else 0.0

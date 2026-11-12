@@ -7,8 +7,11 @@ OpenRouter variant suffix (``:free``, ``:beta``).
 
 Quality is a 0-100 tier for ranking only, not a benchmark score. A model the
 table does not know gets a low tier and an unknown context window, so it is
-picked only when no known model can serve. Operators correct or extend the
-scores with ``SUPERMODE_QUALITY``.
+picked only when no known model can serve. A broad family row (a plain "llama")
+leaves the window unknown rather than guessing a small one: an unknown window is
+never filtered on, and the gateway learns the real one from traffic. Operators
+correct the scores with ``SUPERMODE_QUALITY`` and a model's context window and
+capabilities with ``SUPERMODE_PROFILES``.
 """
 from __future__ import annotations
 
@@ -68,7 +71,7 @@ _TABLE: tuple[tuple[str, int, int | None, bool, bool | None], ...] = (
     (r"gemini-1\.5-pro", 78, 2 * _M, True, True),
     (r"gemini-1\.5-flash", 66, _M, True, True),
     (r"gemma-3", 60, 128 * _K, True, False),
-    (r"gemma", 50, 8 * _K, False, False),
+    (r"gemma", 50, None, False, None),
     # xAI
     (r"grok-4", 93, 256 * _K, True, True),
     (r"grok-3-mini", 78, 128 * _K, False, True),
@@ -76,7 +79,7 @@ _TABLE: tuple[tuple[str, int, int | None, bool, bool | None], ...] = (
     # DeepSeek
     (r"deepseek-(r1|reasoner)", 88, 128 * _K, False, False),
     (r"deepseek-(v3|chat)", 86, 128 * _K, False, True),
-    (r"deepseek", 75, 64 * _K, False, None),
+    (r"deepseek", 75, None, False, None),
     # Moonshot, Qwen, Z.ai
     (r"kimi-k2", 88, 128 * _K, False, True),
     (r"qwen3-(max|235b)", 87, 128 * _K, False, True),
@@ -91,9 +94,10 @@ _TABLE: tuple[tuple[str, int, int | None, bool, bool | None], ...] = (
     # Meta
     (r"llama-4-maverick", 80, _M, True, True),
     (r"llama-4-scout", 74, 128 * _K, True, True),
-    (r"llama-3\.[13]-(405|70)b", 74, 128 * _K, False, True),
-    (r"llama-3\.[123]-(8|3|1)b", 55, 128 * _K, False, True),
-    (r"llama", 55, 8 * _K, False, None),
+    (r"llama-3\.2-(11|90)b.*vision", 66, 128 * _K, True, False),
+    (r"llama-3\.\d-(405|70)b", 74, 128 * _K, False, True),
+    (r"llama-3\.\d-(8|3|1)b", 55, 128 * _K, False, True),
+    (r"llama", 55, None, False, None),
     # Mistral
     (r"mistral-large", 82, 128 * _K, False, True),
     (r"mistral-medium", 81, 128 * _K, True, True),

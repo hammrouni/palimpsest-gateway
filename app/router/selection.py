@@ -99,6 +99,7 @@ async def select_candidates(
     model: str,
     excluded: frozenset[str] = frozenset(),
     preferred_provider: Provider | None = None,
+    records: list[KeyRecord] | None = None,
 ) -> list[Candidate]:
     """The deterministic, ordered candidate list (never raises).
 
@@ -111,7 +112,7 @@ async def select_candidates(
     Keys that already sent their learned requests-per-minute this minute (see
     ``app.router.learning``) go last, so traffic goes to keys with room first.
     """
-    routable = await registry.routable_keys(model=model)
+    routable = await registry.routable_keys(model=model, records=records)
     universe = [record for record in routable if record.id not in excluded]
 
     remaining_by_id = await _remaining_by_id(registry, universe)

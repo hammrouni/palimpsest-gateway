@@ -36,6 +36,7 @@ from app.router.learning import (
 from app.router.rebuild import RebuildHook, identity_rebuild
 from app.router.retry_hint import get_quota_reset_seconds, retry_after_seconds
 from app.router.selection import select
+from app.usage.store import track
 
 logger = logging.getLogger("palimpsest.failover")
 
@@ -261,6 +262,7 @@ async def execute_with_failover(
     rebuild_hook: RebuildHook | None = None,
     first_byte_committed: bool = False,
     observer: Callable[[dict], None] | None = None,
+    deadline: float | None = None,
     **params: object,
 ) -> tuple[AttemptResult, FailoverTrace]:
     """Run the bounded failover loop for one logical request.
@@ -271,6 +273,10 @@ async def execute_with_failover(
     with ``.trace`` attached, when no key is left or the budget is spent.
 
     The whole loop stops once ``2 * provider_timeout`` seconds have passed.
+
+    ``deadline`` (a ``time.monotonic()`` instant) caps the loop earlier than its own
+    bound; a caller that runs the loop for several models passes one shared deadline
+    so the whole request stays inside it.
 
     ``observer``, if given, is called (never awaited, errors ignored) with an
     ``attempt`` event before each provider call and a ``result`` event after it,
@@ -287,7 +293,11 @@ async def execute_with_failover(
     preferred_provider: Provider | None = None
     start_time = time.monotonic()
     # Bounds the whole loop, so one request cannot hold the session lock for minutes.
+    # What the request needs, worked out once: the learning notes use it on every attempt.
+    needs = needs_from_params(messages, params)
     total_deadline = start_time + settings.provider_timeout * 2
+    if deadline is not None:
+        total_deadline = min(total_deadline, deadline)
 
     while True:
         if time.monotonic() >= total_deadline:
@@ -314,7 +324,7 @@ async def execute_with_failover(
                 registry, model, "pool_exhausted", attempts, retry_count, start_time
             )
 
-        await note_attempt(registry.redis, candidate.key_id)
+        track(note_attempt(registry.redis, candidate.key_id))
         _notify(observer, {
             "kind": "attempt", "n": len(attempts) + 1, "key_id": candidate.key_id,
             "provider": candidate.provider.value, "model": model,
@@ -350,9 +360,7 @@ async def execute_with_failover(
         })
 
         if result.ok:
-            await record_success(
-                registry.redis, model, candidate.key_id, needs_from_params(messages, params)
-            )
+            track(record_success(registry.redis, model, candidate.key_id, needs))
             attempts.append(
                 AttemptRecord(
                     key_id=candidate.key_id,
@@ -377,10 +385,10 @@ async def execute_with_failover(
         pause_seconds: int | None = None
         connectivity = is_connectivity_error(result.error)
         # Teach the gateway what blocked this attempt, so other requests avoid it.
-        await record_failure(
-            registry.redis, model, candidate.key_id, needs_from_params(messages, params),
+        track(record_failure(
+            registry.redis, model, candidate.key_id, needs,
             result.error, classification.state, result.headers, connectivity,
-        )
+        ))
         try:
             if classification.state == "transient" and connectivity:
                 # We could not reach the provider (DNS, refused). The key and

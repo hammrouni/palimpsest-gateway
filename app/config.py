@@ -114,6 +114,30 @@ class Settings(BaseSettings):
     # built-in ones, by exact model id ({"my-finetune": 90}).
     supermode_quality: dict[str, int] = Field(default_factory=dict)
 
+    # Supermode: what the gateway should believe about a model, by exact model id:
+    # ({"my-model": {"context": 128000, "vision": true, "tools": true}}). Replaces the
+    # built-in table for the fields given; ``context`` and ``tools`` may be null (unknown).
+    supermode_profiles: dict[str, dict[str, int | bool | None]] = Field(default_factory=dict)
+
+    @field_validator("supermode_profiles")
+    @classmethod
+    def _check_supermode_profiles(
+        cls, value: dict[str, dict[str, int | bool | None]]
+    ) -> dict[str, dict[str, int | bool | None]]:
+        """Only the three known fields, each of a sensible type."""
+        for model, fields in value.items():
+            unknown = set(fields) - {"context", "vision", "tools"}
+            if unknown:
+                raise ValueError(f"{model}: unknown field {', '.join(sorted(unknown))}")
+            context = fields.get("context")
+            if context is not None and (isinstance(context, bool) or context < 1):
+                raise ValueError(f"{model}: context must be a positive number of tokens or null")
+            if "vision" in fields and not isinstance(fields["vision"], bool):
+                raise ValueError(f"{model}: vision must be true or false")
+            if fields.get("tools") is not None and not isinstance(fields["tools"], bool):
+                raise ValueError(f"{model}: tools must be true, false or null")
+        return value
+
     # Supermode: other models tried, best first, when every key of the chosen
     # model is exhausted. 0 = no model fallback.
     supermode_fallback_models: int = Field(default=2, ge=0, le=10)

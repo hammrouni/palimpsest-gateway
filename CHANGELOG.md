@@ -97,6 +97,19 @@ drift. The running version is shown in the dashboard's **System** section and in
   the hero logo reserves its real aspect ratio.
 
 ### Fixed
+- Review fixes: a supermode request moving through several models now shares one deadline
+  (twice the provider timeout) instead of getting a new one per model, which could hold the
+  session lock for minutes. Learning writes run in the background and the request's needs
+  are worked out once, so they no longer delay the first byte. A key's learned
+  requests-per-minute limit counts over the last 60 seconds (not the calendar minute), is
+  learned only after at least 3 requests, and fades after an hour. Parameters are dropped
+  silently for a provider only when the request has no tools. Refused calls repeated by the
+  same client for the same model are kept in the call history once per 30 seconds. Broad
+  model-family rows no longer guess a small context window, a model's context window and
+  capabilities can be set with `PALIMPSEST_SUPERMODE_PROFILES`, and ranking reads the key
+  pool once. In the Live Flow page, flights with no news for minutes release their in-flight
+  counts, the calls kept in memory are capped, and pausing no longer loses what happens
+  while paused or while the tab was hidden.
 - A Google 429 for a quota that belongs to one model (`limit: 0, model: gemini-3.1-pro`
   on the free tier) paused the whole key for 24 hours as "out of credits", taking the
   key's other models down with it. It now pauses only that model on that key: for 24

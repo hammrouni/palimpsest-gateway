@@ -379,12 +379,15 @@ class PoolRegistry:
                 union.setdefault(r.provider, set()).update(r.models)
         return {r.id: frozenset(union.get(r.provider, ()) | set(r.models)) for r in records}
 
-    async def routable_keys(self, model: str | None = None) -> list[KeyRecord]:
+    async def routable_keys(
+        self, model: str | None = None, records: list[KeyRecord] | None = None
+    ) -> list[KeyRecord]:
         """Active keys, optionally only those serving ``model``.
 
-        With a ``model``, keys cooling down for that model are left out.
+        With a ``model``, keys cooling down for that model are left out. ``records``
+        is a key list the caller has just read, to save reading it again.
         """
-        keys = await self.list()
+        keys = records if records is not None else await self.list()
         serving = self.serving_models(keys)
         candidates = [
             k

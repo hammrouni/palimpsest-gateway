@@ -95,6 +95,9 @@ def _mapped_model(provider: Provider, model: str) -> str:
     return f"{_MODEL_PREFIX[provider]}/{model}"
 
 
+# Parameters that change what the reply is: never dropped silently.
+_TOOL_PARAMS = frozenset({"tools", "tool_choice", "parallel_tool_calls"})
+
 # Providers whose API takes ``max_completion_tokens`` as sent.
 _MAX_COMPLETION_TOKENS_PROVIDERS = frozenset({Provider.OPENAI, Provider.OPENROUTER, Provider.GITHUB})
 
@@ -220,9 +223,11 @@ async def _attempt_once(
             messages=messages,
             # litellm's own default is 6000s, holding the session lock throughout.
             timeout=timeout,
-            # A param this provider does not take is dropped, not a 400: the
-            # client sent a valid OpenAI request and another key may need it.
-            drop_params=True,
+            # A tuning param this provider does not take (a seed, a penalty) is dropped,
+            # not a 400: the client sent a valid OpenAI request. With tools it is not:
+            # a reply without the tool call is not what was asked, so the provider
+            # refuses and the gateway can move on to a model that supports them.
+            drop_params=not (_TOOL_PARAMS & filtered_params.keys()),
             **filtered_params,
         )
         hidden = getattr(response, "_hidden_params", None) or {}

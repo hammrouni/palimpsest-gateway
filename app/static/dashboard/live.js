@@ -15,6 +15,12 @@ const LIVE_POLL_MS = 1000;
 const LIVE_MAX_CLIENTS = 10;
 const LIVE_NOW_ROWS = 6;
 const LIVE_STALE_MS = 5 * 60 * 1000;
+/* Calls kept in memory: the oldest finished ones go first once there are more. */
+const LIVE_CALLS_KEEP = 2000;
+const LIVE_CALLS_SLACK = 200;
+/* No poll for this long (a hidden tab, a sleeping laptop): steps were missed, so the
+   call history is loaded again. */
+const LIVE_GAP_MS = 15000;
 /* A batch is replayed with its real gaps, but never over longer than this. */
 const LIVE_REPLAY_MAX_MS = 1800;
 const LIVE_LEG_MS = 450;
@@ -69,6 +75,7 @@ const livePage = {
   keyRecords: [],
   keys: {},
   keysAt: 0,
+  lastPollAt: 0,
   seen: 0,
   dirty: true,
 };
@@ -443,6 +450,17 @@ function liveNewCall(rid) {
   };
 }
 
+/* Keep the calls in memory bounded: drop the oldest finished ones past the cap. */
+function liveTrimCalls() {
+  if (livePage.calls.size <= LIVE_CALLS_KEEP + LIVE_CALLS_SLACK) {
+    return;
+  }
+  const finished = [...livePage.calls.values()].filter((call) => call.done).sort((a, b) => a.t0 - b.t0);
+  for (const call of finished.slice(0, livePage.calls.size - LIVE_CALLS_KEEP)) {
+    livePage.calls.delete(call.rid);
+  }
+}
+
 /* A record of the call history becomes a finished call. */
 function liveCallFromRecord(record) {
   return { ...liveNewCall(record.rid), ...record, done: true };
@@ -459,6 +477,7 @@ function liveCallUpdate(ev) {
     call = liveNewCall(ev.rid);
     call.t0 = ev.t;
     livePage.calls.set(ev.rid, call);
+    liveTrimCalls();
   }
   if (ev.kind === 'request') {
     Object.assign(call, { t0: ev.t, account_id: ev.account_id, requested: ev.requested, model: ev.model, routed_by: ev.routed_by, stream: ev.stream, tools: ev.tools });
@@ -598,9 +617,12 @@ function liveApplyAndDraw(ev, animate) {
   if (!liveActive()) {
     return;
   }
-  liveApply(ev, animate);
-  liveNodeTexts();
-  liveDrawNow();
+  /* Paused: the state keeps up, the screen stays as it is until Resume. */
+  liveApply(ev, animate && !livePage.paused);
+  if (!livePage.paused) {
+    liveNodeTexts();
+    liveDrawNow();
+  }
 }
 
 /* -- text panels ------------------------------------------------------------ */
@@ -636,11 +658,25 @@ function liveDrawNow() {
 
 function liveDrawFlights() {
   const now = Date.now();
+  let dropped = false;
   for (const [rid, flight] of livePage.flights) {
     if (now - flight.last > LIVE_STALE_MS) {
+      /* No news for minutes: give back what it held, or a node would say "in flight" for good. */
+      const client = livePage.clients.find((entry) => entry.id === flight.account_id);
+      const provider = livePage.providers.find((entry) => entry.id === flight.provider);
+      if (client && client.active) {
+        client.active -= 1;
+      }
+      if (provider && provider.active) {
+        provider.active -= 1;
+      }
       livePage.flights.delete(rid);
       liveDropToken(rid);
+      dropped = true;
     }
+  }
+  if (dropped) {
+    liveNodeTexts();
   }
   const rows = [...livePage.flights.values()].sort((a, b) => a.started - b.started);
   livePage.flightsBox.replaceChildren(
@@ -699,6 +735,7 @@ async function liveLoadHistory() {
       livePage.calls.set(record.rid, liveCallFromRecord(record));
     }
   }
+  liveTrimCalls();
   livePage.dirty = true;
 }
 
@@ -707,16 +744,22 @@ async function livePoll() {
     liveStop();
     return;
   }
-  if (livePage.paused || document.hidden) {
+  /* Even paused, keep polling: it keeps the gateway recording and the cursor current. */
+  if (document.hidden) {
     return;
   }
   try {
+    const gap = livePage.lastPollAt && Date.now() - livePage.lastPollAt > LIVE_GAP_MS;
+    if (gap) {
+      await liveLoadHistory();
+    }
     const query = livePage.cursor ? '?after=' + encodeURIComponent(livePage.cursor) : '?limit=100';
     const data = await apiFetch(LIVE_PATH + query);
     if (!liveActive()) {
       return;
     }
-    const history = livePage.firstBatch;
+    livePage.lastPollAt = Date.now();
+    const history = livePage.firstBatch || gap;
     livePage.firstBatch = false;
     if (data.cursor) {
       livePage.cursor = data.cursor;
@@ -734,6 +777,10 @@ async function livePoll() {
 function liveTick() {
   if (!liveActive()) {
     liveStop();
+    return;
+  }
+  if (livePage.paused) {
+    livePage.panel.report('Paused. The page is frozen; steps keep being recorded and show on Resume.', 'ok');
     return;
   }
   liveDrawFlights();
@@ -841,6 +888,7 @@ function renderLive(view) {
     seen: 0,
     frame: null,
     dirty: true,
+    lastPollAt: 0,
   });
   livePage.panel = createStatus();
   livePage.root = el('div', 'stack');
@@ -852,7 +900,13 @@ function renderLive(view) {
     livePage.paused = !livePage.paused;
     livePage.pauseButton.textContent = livePage.paused ? 'Resume' : 'Pause';
     if (!livePage.paused) {
-      livePage.firstBatch = true; // what piled up while paused is shown, not replayed
+      /* What piled up while paused is shown at once, not replayed. */
+      for (const rid of [...livePage.tokens.keys()]) {
+        liveDropToken(rid);
+      }
+      liveNodeTexts();
+      liveDrawNow();
+      livePage.dirty = true;
     }
     liveTick();
   });

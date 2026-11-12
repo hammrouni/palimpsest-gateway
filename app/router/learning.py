@@ -26,6 +26,7 @@ import logging
 import math
 import re
 import time
+import uuid
 from dataclasses import dataclass
 from typing import Any
 
@@ -35,11 +36,16 @@ from app.router.classify import classify
 logger = logging.getLogger("palimpsest.learning")
 
 _MODEL_KEY = "pgw:learn:model:{model}"
-_KEY_MINUTE = "pgw:learn:key:{key_id}:minute:{minute}"
+_KEY_SENT = "pgw:learn:key:{key_id}:sent"
 _KEY_RPM = "pgw:learn:key:{key_id}:rpm"
 _MODEL_TTL = 30 * 86400
-_RPM_TTL = 86400
-_MINUTE_TTL = 180
+# A learned limit fades after an hour, so one unlucky burst is not held against a key for long.
+_RPM_TTL = 3600
+# Requests per minute are counted over the last 60 seconds, not the calendar minute.
+_WINDOW_SECONDS = 60
+# A 429 after fewer requests than this says nothing about a per-minute rate (it is
+# more likely a daily or account limit), so no limit is learned from it.
+_MIN_SENT_TO_LEARN = 3
 # Halve the reliability counters past this many, so old history fades.
 _DECAY_AT = 200
 _RECENT_THROTTLE_SECONDS = 120
@@ -197,32 +203,38 @@ async def learned_many(redis: Any, models: list[str]) -> dict[str, Learned]:
     return {model: _learned(_decode(row or {})) for model, row in zip(models, rows, strict=True)}
 
 
-def _minute(now: float | None = None) -> int:
-    return int((time.time() if now is None else now) // 60)
+def _window_start() -> float:
+    return time.time() - _WINDOW_SECONDS
 
 
 async def note_attempt(redis: Any, key_id: str) -> None:
-    """Count one request sent through ``key_id`` this minute."""
-    name = _KEY_MINUTE.format(key_id=key_id, minute=_minute())
+    """Count one request sent through ``key_id``, for the last-60-seconds window."""
+    name = _KEY_SENT.format(key_id=key_id)
+    now = time.time()
     try:
         pipe = redis.pipeline(transaction=False)
-        pipe.incr(name)
-        pipe.expire(name, _MINUTE_TTL)
+        pipe.zadd(name, {uuid.uuid4().hex: now})  # unique even when the clock is coarse
+        pipe.zremrangebyscore(name, "-inf", now - _WINDOW_SECONDS)
+        pipe.expire(name, _WINDOW_SECONDS * 3)
         await pipe.execute()
     except Exception:
         logger.warning("could not count key attempt", exc_info=True)
 
 
+async def _sent_last_minute(redis: Any, key_id: str) -> int:
+    return int(await redis.zcount(_KEY_SENT.format(key_id=key_id), _window_start(), "+inf"))
+
+
 async def keys_at_learned_limit(redis: Any, key_ids: list[str]) -> set[str]:
-    """Keys that already sent their learned requests-per-minute this minute."""
+    """Keys that already sent their learned requests-per-minute in the last 60 seconds."""
     if not key_ids:
         return set()
-    minute = _minute()
+    start = _window_start()
     try:
         pipe = redis.pipeline(transaction=False)
         for key_id in key_ids:
             pipe.get(_KEY_RPM.format(key_id=key_id))
-            pipe.get(_KEY_MINUTE.format(key_id=key_id, minute=minute))
+            pipe.zcount(_KEY_SENT.format(key_id=key_id), start, "+inf")
         values = await pipe.execute()
     except Exception:
         logger.warning("could not read learned key limits", exc_info=True)
@@ -230,7 +242,7 @@ async def keys_at_learned_limit(redis: Any, key_ids: list[str]) -> set[str]:
     full: set[str] = set()
     for i, key_id in enumerate(key_ids):
         rpm, sent = values[2 * i], values[2 * i + 1]
-        if rpm is not None and sent is not None and int(sent) >= int(rpm):
+        if rpm is not None and int(sent) >= int(rpm):
             full.add(key_id)
     return full
 
@@ -372,9 +384,11 @@ async def _maybe_decay(redis: Any, name: str, ok: int, fail: int) -> None:
 
 
 async def _learn_rpm(redis: Any, key_id: str) -> None:
-    """A 429 with no headers: what this key sent this minute, minus the refused one, is its limit."""
-    sent = await redis.get(_KEY_MINUTE.format(key_id=key_id, minute=_minute()))
-    allowed = max(1, int(sent or 1) - 1)
+    """A 429 with no headers: what the key sent in the last minute, minus the refused one, is its limit."""
+    sent = await _sent_last_minute(redis, key_id)
+    if sent < _MIN_SENT_TO_LEARN:
+        return
+    allowed = sent - 1
     rpm_key = _KEY_RPM.format(key_id=key_id)
     known = await redis.get(rpm_key)
     if known is None or allowed < int(known):
@@ -388,6 +402,6 @@ async def _raise_rpm_if_passed(redis: Any, key_id: str) -> None:
     known = await redis.get(rpm_key)
     if known is None:
         return
-    sent = await redis.get(_KEY_MINUTE.format(key_id=key_id, minute=_minute()))
-    if sent is not None and int(sent) > int(known):
-        await redis.set(rpm_key, str(int(sent)), ex=_RPM_TTL)
+    sent = await _sent_last_minute(redis, key_id)
+    if sent > int(known):
+        await redis.set(rpm_key, str(sent), ex=_RPM_TTL)

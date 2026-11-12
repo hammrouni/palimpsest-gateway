@@ -193,3 +193,74 @@ async def test_empty_pool_refuses_supermode(client, redis):
     resp = await _chat(client, _hi())
 
     assert resp.status_code in (429, 503)
+
+
+@pytest.mark.asyncio
+async def test_models_share_one_deadline_so_a_request_cannot_hold_the_session_for_minutes(
+    client, redis, monkeypatch
+):
+    """Each model got its own 2 x provider_timeout bound: three slow ones held the lock for minutes."""
+    import time
+
+    await _key(redis, Provider.OPENAI, ["gpt-4o", "gpt-4.1", "gpt-4o-mini"], "o")
+    monkeypatch.setattr(get_settings(), "provider_timeout", 1.0)
+    deadlines: list[float] = []
+
+    async def fake(reg, key_id, model, messages, **params):
+        return AttemptResult(ok=False, error=ProviderAttemptError(503, "x", "upstream down", Provider.OPENAI))
+
+    real = failover_module.execute_with_failover
+
+    async def spy(*args, deadline=None, **kwargs):
+        deadlines.append(deadline)
+        return await real(*args, deadline=deadline, **kwargs)
+
+    import app.api.chat as chat_module
+
+    monkeypatch.setattr(failover_module, "adapter_attempt", fake)
+    monkeypatch.setattr(chat_module, "execute_with_failover", spy)
+
+    started = time.monotonic()
+    resp = await _chat(client, {"model": "palimpsest/supermode", "messages": [{"role": "user", "content": "hi"}]})
+
+    assert resp.status_code in (429, 503)
+    assert len(deadlines) >= 2 and len(set(deadlines)) == 1  # one deadline for every model
+    assert time.monotonic() - started < 2 * 1.0 + 1.5
+
+
+def test_broad_family_rows_do_not_guess_a_small_context_window():
+    """'llama-3.2-90b-vision-preview' (128k) used to fall to a plain 8k 'llama' row."""
+    assert profile_for("llama-3.3-70b-versatile").context == 128_000
+    vision = profile_for("llama-3.2-90b-vision-preview")
+    assert vision.vision is True and vision.context == 128_000
+    for unknown in ("llama-9-future", "gemma-7-unknown", "deepseek-newest"):
+        assert profile_for(unknown).context is None  # unknown is never filtered on
+
+
+@pytest.mark.asyncio
+async def test_the_operator_can_set_a_models_context_and_capabilities(redis, monkeypatch):
+    await _key(redis, Provider.GROQ, ["house-model", "gpt-4o"], "k")
+    registry = PoolRegistry(redis)
+    big = Needs(tokens=60_000, vision=True, tools=False)
+
+    # Unknown: the model has no known context and no vision, so an image request drops it.
+    assert "house-model" not in await rank_models(registry, big, limit=10)
+
+    monkeypatch.setattr(
+        get_settings(), "supermode_profiles", {"house-model": {"context": 200_000, "vision": True}}
+    )
+    assert "house-model" in await rank_models(registry, big, limit=10)
+
+    monkeypatch.setattr(get_settings(), "supermode_profiles", {"house-model": {"context": 10_000, "vision": True}})
+    assert "house-model" not in await rank_models(registry, big, limit=10)
+
+
+def test_supermode_profiles_are_checked():
+    from pydantic import ValidationError
+
+    from app.config import Settings
+
+    assert Settings(supermode_profiles={"m": {"context": 8000, "vision": False, "tools": None}})
+    for bad in ({"m": {"speed": 1}}, {"m": {"context": 0}}, {"m": {"vision": 3}}, {"m": {"tools": 3}}):
+        with pytest.raises(ValidationError):
+            Settings(supermode_profiles=bad)

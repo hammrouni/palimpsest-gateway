@@ -339,3 +339,38 @@ async def test_supermode_moves_on_from_a_model_that_is_down_for_now(redis, monke
 
     assert resp.status_code == 200
     assert called == ["gpt-4o", "gpt-4o-mini"]
+
+
+@pytest.mark.asyncio
+async def test_a_429_after_only_a_few_requests_teaches_no_rate(redis):
+    """A throttle after one or two requests is a daily or account limit, not a per-minute rate."""
+    await note_attempt(redis, "k1")
+    await record_failure(redis, "m", "k1", _PLAIN, _err(429, "slow"), "transient", None, False)
+    await note_attempt(redis, "k1")
+    await record_failure(redis, "m", "k1", _PLAIN, _err(429, "slow"), "transient", None, False)
+
+    assert await redis.get("pgw:learn:key:k1:rpm") is None
+
+
+@pytest.mark.asyncio
+async def test_the_rate_is_counted_over_the_last_minute_not_the_calendar_minute(redis):
+    import time
+
+    # Five requests 90 seconds ago: they no longer count, wherever the minute boundary falls.
+    for i in range(5):
+        await redis.zadd("pgw:learn:key:k1:sent", {f"old{i}": time.time() - 90})
+    for _ in range(3):
+        await note_attempt(redis, "k1")
+    await record_failure(redis, "m", "k1", _PLAIN, _err(429, "slow"), "transient", None, False)
+
+    assert await redis.get("pgw:learn:key:k1:rpm") == b"2"  # 3 recent requests, one refused
+    assert await redis.zcard("pgw:learn:key:k1:sent") == 3  # the old ones were trimmed away
+
+
+@pytest.mark.asyncio
+async def test_a_learned_rate_fades_after_an_hour(redis):
+    for _ in range(4):
+        await note_attempt(redis, "k1")
+    await record_failure(redis, "m", "k1", _PLAIN, _err(429, "slow"), "transient", None, False)
+
+    assert 0 < await redis.ttl("pgw:learn:key:k1:rpm") <= 3600

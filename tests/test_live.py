@@ -256,3 +256,18 @@ async def test_the_history_keeps_only_as_many_calls_as_the_recent_requests_do(re
 
     kept = await calls.recent(redis, 1000)
     assert len(kept) == 10 and kept[0]["rid"] == "24"
+
+
+@pytest.mark.asyncio
+async def test_a_client_retrying_a_refused_call_does_not_flood_the_history(redis):
+    from app.usage import calls
+
+    refused = {"account_id": "a", "requested": "no-such-model", "outcome": "exhausted_429", "attempts": []}
+    for i in range(50):
+        await calls.record(redis, {**refused, "rid": str(i)})
+    await calls.record(redis, {**refused, "account_id": "b", "rid": "other-account"})
+    await calls.record(redis, {"account_id": "a", "requested": "gpt-4o", "outcome": "success",
+                               "attempts": [{"key_id": "k"}], "rid": "real"})
+
+    kept = [c["rid"] for c in await calls.recent(redis, 100)]
+    assert kept == ["real", "other-account", "0"]  # one refusal per client and model, real calls always

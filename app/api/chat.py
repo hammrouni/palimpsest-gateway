@@ -231,6 +231,8 @@ class _Turn:
     routed_by: str | None = None
     tools: bool = False
     started_wall: float = field(default_factory=time.time)
+    # When the whole request, every model of a supermode request included, must be over.
+    deadline: float = field(default_factory=lambda: time.monotonic() + get_settings().provider_timeout * 2)
 
     def latency_ms(self) -> int:
         return int((time.monotonic() - self.started) * 1000)
@@ -648,7 +650,8 @@ async def _next_supermode_model(turn: _Turn, tried: list[str]) -> str | None:
     """The best model not tried yet that can serve now, or None (also outside supermode)."""
     if not turn.supermode or turn.needs is None:
         return None
-    if len(tried) > get_settings().supermode_fallback_models:
+    settings = get_settings()
+    if len(tried) > settings.supermode_fallback_models or time.monotonic() >= turn.deadline:
         return None
     ranked = await rank_models(
         PoolRegistry(turn.redis), turn.needs, limit=1, exclude=frozenset(tried)
@@ -686,6 +689,7 @@ async def _run_failover(
     # Supermode moves to the next model when every key of this one is spent or
     # the model turns the request down. The next model is ranked again live, so
     # keys paused by this very request are already out of the running.
+    turn.deadline = time.monotonic() + get_settings().provider_timeout * 2
     earlier: tuple = ()
     tried: list[str] = []
     refused_request: list[str] = []
@@ -701,6 +705,7 @@ async def _run_failover(
                 session=session_ref,
                 rebuild_hook=rebuild_hook,
                 observer=turn.emit if turn.live else None,
+                deadline=turn.deadline,
                 **extra,
                 **_provider_kwargs(request),
             )
