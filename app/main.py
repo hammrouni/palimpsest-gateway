@@ -28,6 +28,7 @@ from app.api.operator import router as operator_router
 from app.api.operator_accounts import router as operator_accounts_router
 from app.api.operator_config import router as config_router
 from app.api.operator_insights import router as operator_insights_router
+from app.api.operator_supermode import router as operator_supermode_router
 from app.api.operator_usage import router as operator_usage_router
 from app.api.pool_routes import ops_router as pool_ops_router
 from app.api.pool_routes import router as pool_router
@@ -280,6 +281,7 @@ def create_app() -> FastAPI:
     app.include_router(config_router)
     app.include_router(operator_usage_router)
     app.include_router(operator_insights_router)
+    app.include_router(operator_supermode_router)
     app.include_router(pool_router)
     app.include_router(pool_ops_router)
 

@@ -210,3 +210,132 @@ def test_an_image_counts_as_a_flat_cost_not_its_base64_length():
         [{"role": "user", "content": [{"type": "image_url", "image_url": {"url": huge}}]}]
     )
     assert needs.vision and needs.tokens < 5000
+
+
+def test_a_request_refusal_another_model_served_costs_rank_for_half_an_hour():
+    assert Learned(declined_at=1000.0).penalty(now=1100.0) == 30
+    assert Learned(declined_at=1000.0).penalty(now=1000.0 + 1801) == 0
+
+
+def test_model_refused_names_request_refusals_but_not_outages():
+    from app.router.learning import model_refused
+
+    assert model_refused(_err(400, "zai does not support parameters: ['max_completion_tokens']")) == "request"
+    assert model_refused(_err(400, "does not support image input")) == "vision"
+    assert model_refused(_err(503, "upstream down")) is None
+    assert model_refused(_err(429, "slow down")) is None
+
+
+async def _supermode_chat(redis, monkeypatch, fake_attempt, body_extra=None):
+    monkeypatch.setattr(failover_module, "adapter_attempt", fake_attempt)
+    app.state.store = RedisStore(redis)
+    async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
+        account = await client.post("/v1/accounts", json={})
+        api_key = account.json()["keys"][0]["key"]
+        return await client.post(
+            "/v1/chat/completions",
+            headers={"Authorization": f"Bearer {api_key}"},
+            json={
+                "model": "palimpsest/supermode",
+                "messages": [{"role": "user", "content": "hi"}],
+                **(body_extra or {}),
+            },
+        )
+
+
+@pytest.mark.asyncio
+async def test_out_of_credits_on_one_provider_moves_to_another_provider(redis, monkeypatch):
+    registry = PoolRegistry(redis)
+    for i in range(2):
+        await registry.create(KeyCreate(
+            provider=Provider.GOOGLE,
+            models=["gemini-3.1-pro-preview", "gemini-3-flash", "gemini-2.5-pro"],
+            key=f"g{i}",
+        ))
+    await registry.create(KeyCreate(provider=Provider.ZAI, models=["glm-4.5"], key="z"))
+    called: list[str] = []
+
+    async def fake_attempt(reg, key_id, model, messages, **params):
+        called.append(model)
+        if model.startswith("gemini"):
+            error = _err(429, "You exceeded your current quota", Provider.GOOGLE)
+            return AttemptResult(ok=False, error=error)
+        return AttemptResult(ok=True, response=_FakeBlockingResponse())
+
+    resp = await _supermode_chat(redis, monkeypatch, fake_attempt)
+
+    assert resp.status_code == 200
+    assert resp.json()["model"] == "glm-4.5"
+    # Both Google keys were spent on the first model; no other Google model was tried.
+    assert called == ["gemini-3.1-pro-preview", "gemini-3.1-pro-preview", "glm-4.5"]
+
+
+@pytest.mark.asyncio
+async def test_a_model_that_refuses_the_request_is_skipped_and_ranked_lower(redis, monkeypatch):
+    registry = PoolRegistry(redis)
+    await registry.create(KeyCreate(provider=Provider.ZAI, models=["glm-4.5"], key="z"))
+    await registry.create(KeyCreate(provider=Provider.OPENAI, models=["gpt-4o"], key="o"))
+    called: list[str] = []
+
+    async def fake_attempt(reg, key_id, model, messages, **params):
+        called.append(model)
+        if model == "glm-4.5":
+            error = _err(400, "zai does not support parameters: ['seed']", Provider.ZAI)
+            return AttemptResult(ok=False, error=error)
+        return AttemptResult(ok=True, response=_FakeBlockingResponse())
+
+    first = await _supermode_chat(redis, monkeypatch, fake_attempt)
+    second = await _supermode_chat(redis, monkeypatch, fake_attempt)
+
+    assert first.status_code == 200 and second.status_code == 200
+    assert called == ["glm-4.5", "gpt-4o", "gpt-4o"]  # learned: glm-4.5 not tried again
+    assert (await learned_many(redis, ["glm-4.5"]))["glm-4.5"].declined_at is not None
+
+
+@pytest.mark.asyncio
+async def test_a_request_every_model_refuses_ends_after_the_fallback_budget(redis, monkeypatch):
+    registry = PoolRegistry(redis)
+    await registry.create(KeyCreate(
+        provider=Provider.OPENAI, models=["gpt-4o", "gpt-4.1", "gpt-4o-mini", "gpt-4.1-mini"], key="o"
+    ))
+    called: list[str] = []
+
+    async def fake_attempt(reg, key_id, model, messages, **params):
+        called.append(model)
+        return AttemptResult(ok=False, error=_err(400, "invalid value for temperature"))
+
+    resp = await _supermode_chat(redis, monkeypatch, fake_attempt)
+
+    assert resp.status_code == 400
+    assert len(called) == get_settings().supermode_fallback_models + 1
+    # Nobody served it, so no model is blamed for it.
+    learned = await learned_many(redis, called)
+    assert all(fact.declined_at is None for fact in learned.values())
+
+
+def test_a_model_down_for_now_is_retried_not_returned():
+    from app.router.classify import classify, pause_reason
+
+    error = _err(400, "OpenAIException - Model 'tencent/hy4-preview-free' is currently unavailable.")
+    assert classify(error).state == "transient"
+    assert pause_reason(error) == "provider_error"
+
+
+@pytest.mark.asyncio
+async def test_supermode_moves_on_from_a_model_that_is_down_for_now(redis, monkeypatch):
+    registry = PoolRegistry(redis)
+    await registry.create(KeyCreate(provider=Provider.CUSTOM, models=["gpt-4o"], key="c",
+                                    base_url="https://llm.example.com/v1"))
+    await registry.create(KeyCreate(provider=Provider.OPENAI, models=["gpt-4o-mini"], key="o"))
+    called: list[str] = []
+
+    async def fake_attempt(reg, key_id, model, messages, **params):
+        called.append(model)
+        if model == "gpt-4o":
+            return AttemptResult(ok=False, error=_err(400, "Model 'gpt-4o' is currently unavailable."))
+        return AttemptResult(ok=True, response=_FakeBlockingResponse())
+
+    resp = await _supermode_chat(redis, monkeypatch, fake_attempt)
+
+    assert resp.status_code == 200
+    assert called == ["gpt-4o", "gpt-4o-mini"]

@@ -46,10 +46,11 @@ from app.pool.tokens import add_tokens
 from app.provider.adapter import AttemptResult
 from app.router.exhaustion import PoolExhaustedError, render_exhausted, render_fatal
 from app.router.failover import FailoverTrace, capacity_refusal, execute_with_failover
-from app.router.learning import capability_refused
+from app.router.learning import Needs, model_refused, record_request_refused
 from app.router.master import effective_model
 from app.router.rebuild import identity_rebuild
 from app.router.supermode import is_supermode, needs_of, rank_models
+from app.router.supermode_stats import record as record_supermode
 from app.schemas.chat import (
     ChatCompletionRequest,
     ChatCompletionResponse,
@@ -215,9 +216,12 @@ class _Turn:
     # Seconds the client was told to wait (Retry-After) on a throttled refusal.
     retry_after_s: int | None = None
     # Supermode: the request named ``palimpsest/supermode`` and ``model`` is the
-    # gateway's pick; ``fallback_models`` are tried next, best first.
+    # gateway's pick; ``needs`` ranks the next model if this one cannot serve.
     supermode: bool = False
-    fallback_models: list[str] = field(default_factory=list)
+    needs: Needs | None = None
+    # Supermode statistics: the model first picked and each move to another one.
+    picked: str | None = None
+    hops: list[dict] = field(default_factory=list)
 
     def latency_ms(self) -> int:
         return int((time.monotonic() - self.started) * 1000)
@@ -240,6 +244,8 @@ class _Turn:
     ) -> None:
         """One request-log record and one usage record per terminal outcome."""
         attempts = trace.attempts if trace is not None else ()
+        if self.supermode:
+            track(self._record_supermode(status_code, outcome, attempts))
         log_request(
             request_id=self.request_id,
             settle_id=self.settle_id,
@@ -276,6 +282,31 @@ class _Turn:
                 # The provider that served it, or the last one tried.
                 next((a.provider.value for a in reversed(attempts)), None),
             )
+        )
+
+    async def _record_supermode(self, status_code: int, outcome: str, attempts: tuple) -> None:
+        """Supermode statistics: what was picked, who answered, where it moved on."""
+        served = self.model if outcome in SERVED_OUTCOMES and status_code < 400 else None
+        needs = self.needs
+        await record_supermode(
+            self.redis,
+            {
+                "request_id": self.request_id,
+                "account_id": self.account_id,
+                "picked": self.picked,
+                "served": served,
+                "provider": next((a.provider.value for a in reversed(attempts)), None),
+                "outcome": outcome,
+                "status_code": status_code,
+                "latency_ms": self.latency_ms(),
+                "attempts": len(attempts),
+                "hops": self.hops,
+                "needs": {
+                    "tokens": needs.tokens if needs else None,
+                    "vision": bool(needs and needs.vision),
+                    "tools": bool(needs and needs.tools),
+                },
+            },
         )
 
     async def _record_usage(
@@ -554,6 +585,18 @@ async def _unexpected_failure(
     )
 
 
+async def _next_supermode_model(turn: _Turn, tried: list[str]) -> str | None:
+    """The best model not tried yet that can serve now, or None (also outside supermode)."""
+    if not turn.supermode or turn.needs is None:
+        return None
+    if len(tried) > get_settings().supermode_fallback_models:
+        return None
+    ranked = await rank_models(
+        PoolRegistry(turn.redis), turn.needs, limit=1, exclude=frozenset(tried)
+    )
+    return ranked[0] if ranked else None
+
+
 async def _run_failover(
     turn: _Turn,
     request: ChatCompletionRequest,
@@ -582,11 +625,15 @@ async def _run_failover(
         rebuild_hook = identity_rebuild
 
     # Supermode moves to the next model when every key of this one is spent or
-    # the model cannot take the request; earlier attempts stay in the trace.
-    models = [turn.model, *turn.fallback_models]
+    # the model turns the request down. The next model is ranked again live, so
+    # keys paused by this very request are already out of the running.
     earlier: tuple = ()
-    for index, model in enumerate(models):
+    tried: list[str] = []
+    refused_request: list[str] = []
+    model = turn.model
+    while True:
         turn.model = model
+        tried.append(model)
         try:
             result, trace = await execute_with_failover(
                 PoolRegistry(turn.redis),
@@ -600,13 +647,14 @@ async def _run_failover(
         except PoolExhaustedError as exc:
             if exc.trace is not None:
                 earlier = (*earlier, *exc.trace.attempts)
-            if index + 1 < len(models):
+            following = await _next_supermode_model(turn, tried)
+            if following is not None:
                 logger.info(
-                    "supermode fallback request_id=%s from=%s to=%s",
-                    turn.request_id,
-                    model,
-                    models[index + 1],
+                    "supermode fallback request_id=%s from=%s to=%s cause=exhausted",
+                    turn.request_id, model, following,
                 )
+                turn.hops.append({"from": model, "to": following, "cause": "exhausted"})
+                model = following
                 continue
             if exc.trace is not None:
                 exc.trace = replace(exc.trace, attempts=earlier)
@@ -618,25 +666,29 @@ async def _run_failover(
             raise rendered from exc
         except Exception as exc:
             raise await _unexpected_failure(turn, trace, exc) from exc
-        if (
-            not result.ok
-            and index + 1 < len(models)
-            and result.error is not None
-            and capability_refused(result.error)
-        ):
-            # This model cannot take the request (too long, images, tools); it
-            # is now learned, and the next model gets the request.
-            earlier = (*earlier, *trace.attempts)
-            logger.info(
-                "supermode fallback request_id=%s from=%s to=%s cause=%s",
-                turn.request_id,
-                model,
-                models[index + 1],
-                capability_refused(result.error),
-            )
-            continue
+        cause = (
+            model_refused(result.error)
+            if not result.ok and turn.supermode and result.error is not None
+            else None
+        )
+        if cause is not None:
+            following = await _next_supermode_model(turn, tried)
+            if following is not None:
+                earlier = (*earlier, *trace.attempts)
+                if cause == "request":
+                    refused_request.append(model)
+                logger.info(
+                    "supermode fallback request_id=%s from=%s to=%s cause=%s",
+                    turn.request_id, model, following, cause,
+                )
+                turn.hops.append({"from": model, "to": following, "cause": cause})
+                model = following
+                continue
         if earlier:
             trace = replace(trace, attempts=(*earlier, *trace.attempts))
+        if result.ok and refused_request:
+            # Another model took what these refused: the refusal was theirs.
+            await record_request_refused(turn.redis, refused_request)
         break
 
     if not result.ok:
@@ -859,12 +911,14 @@ async def chat_completions(
         request = request.model_copy(update={"model": served_model})
 
     supermode = is_supermode(request.model)
-    ranked: list[str] = []
-    if supermode:
+    needs = needs_of(request) if supermode else None
+    picked: str | None = None
+    if needs is not None:
         # The gateway picks the model: best quality that fits and can serve now.
-        ranked = await rank_models(PoolRegistry(store.redis), needs_of(request))
+        ranked = await rank_models(PoolRegistry(store.redis), needs, limit=1)
         if ranked:
             request = request.model_copy(update={"model": ranked[0]})
+            picked = ranked[0]
 
     request_id = (
         x_request_id
@@ -882,7 +936,8 @@ async def chat_completions(
         redis=store.redis,
         session_store=session_store,
         supermode=supermode,
-        fallback_models=ranked[1:],
+        needs=needs,
+        picked=picked,
     )
 
     await _admit(turn)

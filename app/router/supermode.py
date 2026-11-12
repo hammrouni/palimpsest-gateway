@@ -26,6 +26,7 @@ so it costs no latency and no quota.
 from __future__ import annotations
 
 import math
+from dataclasses import dataclass
 from itertools import groupby
 
 from app.config import get_settings
@@ -82,8 +83,18 @@ def _capacity(candidates: list) -> float:
     return float(sum(c.remaining_cap for c in candidates))
 
 
-async def rank_models(registry: PoolRegistry, needs: Needs, limit: int | None = None) -> list[str]:
-    """Models able to serve ``needs`` now, best first; at most ``limit`` of them."""
+async def rank_models(
+    registry: PoolRegistry,
+    needs: Needs,
+    limit: int | None = None,
+    exclude: frozenset[str] = frozenset(),
+) -> list[str]:
+    """Models able to serve ``needs`` now, best first; at most ``limit`` of them.
+
+    Read live: a key paused a moment ago (out of credits, throttled) is already
+    left out, so asking again after a failure gives the next model that can
+    really serve, whatever provider it is on. ``exclude`` drops models tried.
+    """
     if limit is None:
         limit = get_settings().supermode_fallback_models + 1
     records = await registry.list()
@@ -93,6 +104,7 @@ async def rank_models(registry: PoolRegistry, needs: Needs, limit: int | None = 
         for record in records
         if record.state != KeyState.SUSPENDED
         for model in serving[record.id]
+        if model not in exclude
     }
     learned = await learned_many(registry.redis, sorted(served))
     contenders = []
@@ -114,3 +126,90 @@ async def rank_models(registry: PoolRegistry, needs: Needs, limit: int | None = 
         if len(ranked) >= limit:
             break
     return ranked[:limit]
+
+
+@dataclass(frozen=True)
+class RankEntry:
+    """One served model as supermode sees it for a given request."""
+
+    model: str
+    providers: tuple[str, ...]
+    base_quality: int  # the built-in table's score
+    override: int | None  # the operator's score for this exact model, if any
+    penalty: int  # points taken off for failures, throttles, refused requests
+    score: int  # what the ranking uses: (override or base) minus penalty
+    context: int | None  # tokens it holds (table, corrected by what was learned)
+    vision: bool
+    tools: bool | None
+    keys_ready: int
+    capacity: float | None  # remaining daily cap over its ready keys; None = uncapped
+    reason: str | None  # why it was left out: context, vision, tools, no_key_ready
+    learned: Learned
+
+    @property
+    def ranked(self) -> bool:
+        return self.reason is None
+
+
+async def explain_ranking(registry: PoolRegistry, needs: Needs) -> list[RankEntry]:
+    """Every served model with its score and, if dropped, why: ranked first, best first.
+
+    The same rules as ``rank_models``, but nothing is cut short, for the dashboard.
+    """
+    records = await registry.list()
+    serving = registry.serving_models(records)
+    providers: dict[str, set[str]] = {}
+    for record in records:
+        if record.state == KeyState.SUSPENDED:
+            continue
+        for model in serving[record.id]:
+            providers.setdefault(model, set()).add(record.provider.value)
+    learned = await learned_many(registry.redis, sorted(providers))
+    overrides = get_settings().supermode_quality
+
+    entries: list[RankEntry] = []
+    for model in sorted(providers):
+        facts = learned[model]
+        base = profile_for(model)
+        profile = _with_learned(base, facts)
+        reason = None
+        if needs.vision and not profile.vision:
+            reason = "vision"
+        elif needs.tools and profile.tools is False:
+            reason = "tools"
+        elif profile.context is not None and needs.tokens > profile.context:
+            reason = "context"
+        candidates = []
+        if reason is None:
+            candidates = await select_candidates(registry, model)
+            if not candidates:
+                reason = "no_key_ready"
+        capacity = _capacity(candidates) if candidates else 0.0
+        quality = overrides.get(model, base.quality)
+        entries.append(
+            RankEntry(
+                model=model,
+                providers=tuple(sorted(providers[model])),
+                base_quality=base.quality,
+                override=overrides.get(model),
+                penalty=facts.penalty(),
+                score=quality - facts.penalty(),
+                context=profile.context,
+                vision=profile.vision,
+                tools=profile.tools,
+                keys_ready=len(candidates),
+                capacity=None if math.isinf(capacity) else capacity,
+                reason=reason,
+                learned=facts,
+            )
+        )
+    entries.sort(
+        key=lambda e: (
+            not e.ranked,
+            -e.score,
+            0 if e.capacity is None else 1,
+            -(e.capacity or 0.0),
+            e.model,
+        )
+    )
+    return entries

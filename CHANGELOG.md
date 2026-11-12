@@ -27,6 +27,13 @@ drift. The running version is shown in the dashboard's **System** section and in
   rate-limit headers gets a learned requests-per-minute limit, and keys at it are
   tried last so other requests go elsewhere first. A supermode request refused for a
   missing capability moves to the next model instead of failing.
+- Supermode page in the dashboard: how it works and how a model is scored, a live
+  ranking for a request of any size, with or without images or tools (every model with
+  its score, context window, keys ready, what was learned, and why it was left out),
+  statistics for the last 1 to 90 days (answered, first pick answered, moves to another
+  model and their causes, latency), where requests go by model, provider and client,
+  the request limits the gateway learned for keys, and the last 50 supermode requests.
+  `GET /operator/v1/supermode` and `GET /operator/v1/supermode/ranking`.
 - Test all models: the Test dialog can test every model of a key (a tiny request each,
   three at a time, up to 30) and show which ones answer, then **Keep only the working
   models**. A provider's list names what exists, not what an account may call; this
@@ -80,6 +87,27 @@ drift. The running version is shown in the dashboard's **System** section and in
   the hero logo reserves its real aspect ratio.
 
 ### Fixed
+- A Google 429 for a quota that belongs to one model (`limit: 0, model: gemini-3.1-pro`
+  on the free tier) paused the whole key for 24 hours as "out of credits", taking the
+  key's other models down with it. It now pauses only that model on that key: for 24
+  hours when the limit is 0 (shown as `model_unavailable`), otherwise until Google's
+  `retryDelay`.
+- A 400 saying the model "is currently unavailable" (or temporarily unavailable or
+  disabled) was returned to the client as a bad request. The model is now paused
+  briefly on that key and the request goes to another key or, in supermode, another
+  model.
+- A stream that failed on its first read kept only 500 characters of the provider's
+  error, which cut off Google's `limit: N, model: X` detail, so a per-model rate limit
+  on a free Flash model still paused the whole key as "out of credits".
+- Supermode ranks the next model live after a failure instead of using a list fixed
+  when the request arrived: when one provider's keys ran out of credits, every backup
+  on that provider failed with it and the client got 429.
+- Supermode moves to the next model on any refusal of the request itself (an
+  unsupported parameter, an upstream "bad request"), and a model that refused what a
+  later model served ranks lower for 30 minutes.
+- `max_completion_tokens` is sent as `max_tokens` to providers other than OpenAI,
+  OpenRouter and GitHub Models, and parameters a provider does not take are dropped:
+  Z.ai answered every such request with 400 `UnsupportedParamsError`.
 - Pool Keys: the State, Provider and Search filters had no effect (they were sent to
   an API that ignores them) and every redraw refetched the list.
 - Limits dialog: no second provider call after the first one failed, no doubled full

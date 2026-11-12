@@ -1611,3 +1611,56 @@ h4 {
     animation: none;
   }
 }
+
+/* -- supermode ---------------------------------------------------------------- */
+
+.sm-steps {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(240px, 1fr));
+  gap: 12px;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.sm-step {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  padding: 12px 14px;
+  background: var(--bg);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+}
+
+.sm-step p {
+  margin: 0;
+}
+
+.sm-step-num {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 24px;
+  height: 24px;
+  color: var(--accent-text);
+  font-size: 12px;
+  font-weight: 700;
+  background: var(--accent);
+  border-radius: 999px;
+}
+
+.sm-columns {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(300px, 1fr));
+  gap: 16px;
+  align-items: start;
+}
+
+.sm-tool {
+  align-items: flex-end;
+}
+
+.sm-path {
+  overflow-wrap: anywhere;
+}

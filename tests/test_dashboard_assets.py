@@ -163,7 +163,8 @@ def test_every_page_uses_the_shared_frame_and_in_page_dialogs():
     js = JS.read_text(encoding="utf-8")
     sections = js[js.index("const SECTIONS = [") : js.index("\n];", js.index("const SECTIONS"))]
     insights = (JS.parent / "insights.js").read_text(encoding="utf-8")
-    assert (js + insights).count("mountPage(view, {\n") == sections.count("render: ")
+    supermode = (JS.parent / "supermode.js").read_text(encoding="utf-8")
+    assert (js + insights + supermode).count("mountPage(view, {\n") == sections.count("render: ")
     assert "window.confirm" not in js.replace("replacement for window.confirm", "")
     assert "alert(" not in js
     html = (JS.parent / "index.html").read_text(encoding="utf-8")

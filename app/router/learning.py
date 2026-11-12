@@ -43,6 +43,8 @@ _MINUTE_TTL = 180
 # Halve the reliability counters past this many, so old history fades.
 _DECAY_AT = 200
 _RECENT_THROTTLE_SECONDS = 120
+# How long a model that refused a request another model then served ranks lower.
+_RECENT_REFUSAL_SECONDS = 1800
 
 # Room kept for the reply when the client sets no max_tokens.
 _DEFAULT_REPLY_TOKENS = 1024
@@ -120,6 +122,7 @@ class Learned:
     ok: int = 0
     fail: int = 0
     throttled_at: float | None = None
+    declined_at: float | None = None  # refused a request another model then served
 
     def context(self, base: int | None) -> int | None:
         """The window to plan with: what failed caps it, what succeeded raises it."""
@@ -139,6 +142,8 @@ class Learned:
         now = time.time() if now is None else now
         if self.throttled_at is not None and now - self.throttled_at < _RECENT_THROTTLE_SECONDS:
             points += 5
+        if self.declined_at is not None and now - self.declined_at < _RECENT_REFUSAL_SECONDS:
+            points += 30
         return points
 
 
@@ -164,6 +169,7 @@ def _decode(raw: dict) -> dict[str, str]:
 
 def _learned(row: dict[str, str]) -> Learned:
     throttled = row.get("throttled_at")
+    declined = row.get("declined_at")
     return Learned(
         ctx_ok=_int(row, "ctx_ok"),
         ctx_fail=_int(row, "ctx_fail"),
@@ -172,6 +178,7 @@ def _learned(row: dict[str, str]) -> Learned:
         ok=_int(row, "ok") or 0,
         fail=_int(row, "fail") or 0,
         throttled_at=float(throttled) if throttled else None,
+        declined_at=float(declined) if declined else None,
     )
 
 
@@ -228,6 +235,23 @@ async def keys_at_learned_limit(redis: Any, key_ids: list[str]) -> set[str]:
     return full
 
 
+async def learned_key_limits(redis: Any, key_ids: list[str]) -> dict[str, int]:
+    """The requests-per-minute limit learned for each key that has one."""
+    if not key_ids:
+        return {}
+    try:
+        pipe = redis.pipeline(transaction=False)
+        for key_id in key_ids:
+            pipe.get(_KEY_RPM.format(key_id=key_id))
+        values = await pipe.execute()
+    except Exception:
+        logger.warning("could not read learned key limits", exc_info=True)
+        return {}
+    return {
+        key_id: int(value) for key_id, value in zip(key_ids, values, strict=True) if value is not None
+    }
+
+
 def capability_refused(error: object) -> str | None:
     """``context``, ``vision`` or ``tools`` when a refusal names the missing capability."""
     classification = classify(error)
@@ -240,6 +264,38 @@ def capability_refused(error: object) -> str | None:
     ):
         return "tools"
     return None
+
+
+def model_refused(error: object) -> str | None:
+    """Why a model, not the gateway or the key, turned this request down.
+
+    ``context``, ``vision`` or ``tools`` for a missing capability, ``request``
+    for any other refusal of the request itself (an unsupported parameter, an
+    upstream "bad request"): another model may well accept it as sent.
+    """
+    refused = capability_refused(error)
+    if refused:
+        return refused
+    classification = classify(error)
+    if classification.state == "fatal" and getattr(error, "status_code", None) in (400, 404, 422):
+        return "request"
+    return None
+
+
+async def record_request_refused(redis: Any, models: list[str]) -> None:
+    """These models refused a request that a later model served: rank them lower for a while."""
+    if not models:
+        return
+    try:
+        pipe = redis.pipeline(transaction=False)
+        for model in models:
+            name = _MODEL_KEY.format(model=model)
+            pipe.hset(name, "declined_at", str(time.time()))
+            pipe.hincrby(name, "fail", 1)
+            pipe.expire(name, _MODEL_TTL)
+        await pipe.execute()
+    except Exception:
+        logger.warning("could not record refused request", exc_info=True)
 
 
 async def record_success(redis: Any, model: str, key_id: str, needs: Needs) -> None:

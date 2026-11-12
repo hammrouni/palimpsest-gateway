@@ -43,6 +43,8 @@ _API_PATHS = {
     "/operator/v1/export/requests.csv",
     "/operator/v1/export/audit.csv",
     "/operator/v1/system",
+    "/operator/v1/supermode",
+    "/operator/v1/supermode/ranking",
     "/operator/v1/metrics",
     "/operator/v1/keys",
     "/operator/v1/keys/{key_id}",

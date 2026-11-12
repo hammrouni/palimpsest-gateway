@@ -288,7 +288,9 @@ When a key or one of its models is held back, the gateway stores the cause with 
 | `no_credits` | The account is out of money. Waiting does not help until it is topped up. |
 | `daily_limit` | A per-day quota was reached; the key returns at the provider's reset. |
 | `rate_limit` | A brief limit; the model rests for the provider's retry hint, or `COOLDOWN_SECONDS`. |
-| `model_unavailable` | The provider does not offer the model (404, or a model-scoped 403). The model is paused for 24 hours and the key keeps serving its other models. A 404 pauses the model on every key of that provider. |
+| `model_unavailable` | The provider does not offer the model (404, or a model-scoped 403), or its quota for this model is 0 (Google's free tier for Gemini Pro: `limit: 0, model: gemini-3.1-pro`). The model is paused for 24 hours and the key keeps serving its other models. A 404 pauses the model on every key of that provider. |
+
+A 429 that names the model its quota belongs to (Google: `Quota exceeded for metric: ..., limit: N, model: ...`) pauses only that model on that key: until Google's `retryDelay` when the limit is above 0, for 24 hours when it is 0. Only a quota that names no model pauses the whole key.
 | `network` | The provider timed out. |
 | `provider_error` | A 5xx from the provider. |
 | `auth` | The key was refused; it is suspended until an operator resumes it. |
@@ -323,7 +325,7 @@ The choice is quality first:
 3. The rest are ranked by quality, highest first. Equal quality goes to the model with the most capacity left: an uncapped key first, then the most remaining daily cap.
 4. A model with no key ready now (all exhausted, cooling down or capped out) is skipped.
 
-The first model serves the request. If every key of it is spent during the request, the next one in the ranking takes over, up to `PALIMPSEST_SUPERMODE_FALLBACK_MODELS` more. The response `model` field and the `X-Palimpsest-Model` header name the model that answered.
+The first model serves the request. If every key of it is spent during the request, or the model turns the request down (too long, images, tools, a parameter it does not take, an upstream "bad request"), the gateway ranks again and the best model not tried yet takes over, up to `PALIMPSEST_SUPERMODE_FALLBACK_MODELS` more. The ranking is read live, so keys this request just paused are already out: when a provider's keys run out of credits, the next model comes from a provider that still has some. The response `model` field and the `X-Palimpsest-Model` header name the model that answered.
 
 No provider is called to make the choice, so it adds no latency and spends no quota. Quality, context window and capabilities come from a built-in table matched on the model id (`app/router/supermode_profiles.py`); routing prefixes (`openai/gpt-4o`) and OpenRouter suffixes (`:free`) are ignored when matching. A model the table does not know gets a low score, so it is picked only when no known model can serve. Set `PALIMPSEST_SUPERMODE_QUALITY` to correct a score or rank your own models:
 
@@ -339,10 +341,25 @@ Every provider answer teaches the gateway something, kept in Redis, so the next 
 | :--- | :--- | :--- |
 | Context window | A success at N tokens proves the window holds N; a context-length refusal at N caps it below N. A later success above a refusal clears the refusal. | Supermode skips the model for prompts that would not fit, before calling anyone. |
 | Vision, tool calling | A request with images or `tools` that succeeds proves the capability; one refused for it marks the model as lacking it. | Supermode skips the model for requests that need it. |
+| Refused requests | A model turned a supermode request down and a later model served it, so the refusal was that model's. | The model loses 30 quality points for 30 minutes. A request that every model refuses blames none of them. |
 | Reliability | Successes and provider-side failures per model (rate limits, outages, missing model). Capability refusals and network faults on our side do not count. Counts are halved past 200 so old history fades. | After 5 requests, a model loses up to 20 quality points for its failure rate, and 5 more for 2 minutes after a 429. |
 | Requests per minute, per key | A 429 from a key whose provider sent no rate-limit headers: the requests that key took that minute, minus the refused one, become its learned limit (kept 24 hours). A later minute that goes past it without a 429 raises it. | Keys at their learned limit this minute are tried last, for every model, supermode or not. They are not skipped, so a wrong guess never refuses a request. |
 
-When a supermode request is refused because the chosen model cannot take it (too long, images, tools), the refusal is learned and the next model in the ranking gets the request instead of the client seeing the error. Image parts count as a flat 1500 tokens in the estimate, not their base64 length. Learned model facts expire 30 days after the model was last used.
+When a supermode request is refused because the chosen model cannot take it, the refusal is learned and the next model gets the request instead of the client seeing the error. Image parts count as a flat 1500 tokens in the estimate, not their base64 length. Learned model facts expire 30 days after the model was last used.
+
+#### The Supermode page
+
+The dashboard has a **Supermode** page (Monitoring group) that shows how it works and what it did. Choose the range at the top.
+
+- **Cards:** requests, how many were answered, how often the best-ranked model did the work (*First pick answered*), how many moved to another model, average latency, requests nothing could serve, and requests that needed images or tools.
+- **How supermode works / How a model is selected:** the steps above and the parts of a score, with your live settings (the number of other models it may try, any quality overrides).
+- **What it would pick right now:** the live ranking for a request of the size and kind you choose (prompt plus reply tokens, with or without an image, with or without tools). Each model shows its score (hover for quality minus penalty), context window, image and tool support, keys ready, capacity left, and what the gateway has learned about it. A model that is left out says why: prompt too long for it, no image support, no tool support, or no key ready. The same data is at `GET /operator/v1/supermode/ranking?tokens=N&vision=true&tools=true`.
+- **Where requests go:** answered requests by model (with how often each was the first pick), by provider and by client.
+- **Why requests moved to another model:** every move counted by cause (every key spent or paused, prompt too long, no image support, no tool support, request refused).
+- **Learned request limits:** the requests-per-minute limits the gateway worked out for keys whose provider sends none.
+- **Recent supermode requests:** the last 50, with what was needed, the model first picked, each move and its cause, who answered, and the result.
+
+The statistics start when supermode is first used after this version is installed. They are kept for 90 days (daily counters) and the last 300 requests, and hold only names, counts and timings, never message content. `GET /operator/v1/supermode?days=N` returns them. A request to a real model name is not counted. With a master model set the page says supermode is bypassed.
 
 `master_model` still wins: with it set, supermode requests go to the master like any other. The pick is made per request, so two turns of one session can be answered by different models when capacity changes between them.
 
