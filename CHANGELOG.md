@@ -12,7 +12,13 @@ drift. The running version is shown in the dashboard's **System** section and in
 
 ## [Unreleased]
 
+## [1.2.0] - 2026-11-13
+
 ### Added
+- New provider: xAI (`xai`, Grok models), served from `https://api.x.ai/v1`; override
+  with `PALIMPSEST_XAI_BASE_URL` or a key's own `base_url`.
+- Dashboard light/dark switch in the top bar. The choice is remembered and applied
+  before the page paints; with no choice the dashboard follows the system theme.
 - Supermode: request the model `palimpsest/supermode` and the gateway picks the best
   model the pool can serve now, across every provider and key. Quality first, then
   capacity left; models whose context window, vision or tool support cannot take the
@@ -77,6 +83,14 @@ drift. The running version is shown in the dashboard's **System** section and in
   the request waits for it instead of answering 429.
 
 ### Changed
+- Dashboard redesign: a blue-grey page with white panels, the Inter font (self-hosted,
+  shipped with the package), headline figures in one sheet, drawn icons instead of
+  text glyphs and quieter tables. Labels sit beside their inputs; a page's filters
+  share the header with its buttons, or get a toolbar row when there are three or
+  more; long page descriptions stay on one line with the full text on hover.
+- Dashboard on small screens: the sidebar folds behind a menu button, the page scrolls
+  as one, wide tables scroll inside their own box and touch screens get larger
+  controls.
 - An empty pool is refused right after admission, before the session lock and history
   read, and the admission is given back.
 - A retry budget spent only on rate or quota limits answers `429 budget_exhausted`
@@ -211,7 +225,8 @@ drift. The running version is shown in the dashboard's **System** section and in
   with failover, per-key and per-user caps, session history, an operator API and
   dashboard.
 
-[Unreleased]: https://github.com/hammrouni/palimpsest-gateway/compare/v1.1.1...HEAD
+[Unreleased]: https://github.com/hammrouni/palimpsest-gateway/compare/v1.2.0...HEAD
+[1.2.0]: https://github.com/hammrouni/palimpsest-gateway/compare/v1.1.1...v1.2.0
 [1.1.1]: https://github.com/hammrouni/palimpsest-gateway/compare/v1.1.0...v1.1.1
 [1.1.0]: https://github.com/hammrouni/palimpsest-gateway/compare/v1.0.0...v1.1.0
 [1.0.0]: https://github.com/hammrouni/palimpsest-gateway/releases/tag/v1.0.0
