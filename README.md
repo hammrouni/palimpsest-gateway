@@ -88,6 +88,10 @@ flowchart LR
 - **Drop-in OpenAI API**: `/v1/chat/completions` (streaming and non-streaming, tool calls), `/v1/models`.
 - **Multi-provider key pool**: OpenAI, Anthropic, Google Gemini, OpenRouter, Mistral, Groq, Z.ai, GitHub Models and custom OpenAI-compatible keys, each with optional request cap, token budget, reset schedule and a label.
 - **Master models**: send every request to one chosen model for the whole gateway, or to one chosen model per provider, picked from the models your keys serve. Optionally let every key of a provider share one model list.
+- **Supermode**: ask for the model `palimpsest/supermode` and the gateway picks the best model your pool can serve right now, across every provider and key: quality first, then capacity left. Models that cannot take the request (too long, images, tools) or have no key ready are skipped, and if one fails the next best takes over. See [Supermode](#supermode).
+- **Learns from traffic**: context windows, vision and tool support, how reliable each model is, and a requests-per-minute limit for keys whose provider sends none are worked out from what succeeds and what is refused, so the next request avoids what blocked this one.
+- **Live Flow**: watch requests travel from a client through the gateway to a provider and model, and the answer come back, with a history of every call and the keys and models it tried, and which key serves which model.
+- **Key tests**: send one tiny real request through a key, or test every model of a key to find the ones the account can really use.
 - **Limit sync**: check an OpenRouter key against OpenRouter's own numbers and correct the local cap and used count.
 - **Clear pauses**: when a key or model is held back, the dashboard says why (out of credits, daily limit, rate limit, model not available) and when it returns.
 - **Versioned**: releases follow Semantic Versioning and are listed in [CHANGELOG.md](CHANGELOG.md).
@@ -95,7 +99,7 @@ flowchart LR
 - **Conversation memory**: per-user session history, so clients send only the new message, and failover keeps the context.
 - **Fairness**: per-user daily request caps and a pool low-water mark that throttles before the pool runs dry.
 - **Provider detail stays internal**: responses to users carry generic messages and stable error codes. Provider key material is never returned after creation.
-- **Operator dashboard**: Overview, Pool Keys, Utilization & Failover, Users, Usage, Sessions, Requests, Performance, Costs, Alerts, Audit & Export, System and Configuration.
+- **Operator dashboard**: Overview, Live Flow, Supermode, Pool Keys, Utilization & Failover, Users, Usage, Sessions, Requests, Performance, Costs, Alerts, Audit & Export, System and Configuration.
 - **Cost view from your own prices**: you enter per-model prices and an optional monthly budget; the gateway derives spend. Nothing is bundled, so prices never go stale silently.
 - **Alerts**: low pool capacity, key problems, high error rate, users near their cap, with an optional webhook.
 - **Audit trail and exports**: operator actions are recorded without key material; usage, requests and audit export as CSV.
@@ -117,6 +121,18 @@ flowchart LR
 
 Every OpenAI-compatible provider (all but Anthropic, Google and OpenRouter) takes an optional per-key `base_url`, so one gateway can pool several endpoints of the same kind (a local Ollama and a hosted vLLM, say). The provider key is sent to that URL, so it must be `http(s)://host[:port][/path]`; credentials in the URL, query strings and cloud metadata addresses are refused.
 
+
+## Supermode
+
+Ask for the model `palimpsest/supermode` and the gateway chooses the model for you, so a client needs no model list and no idea which provider has quota left.
+
+```bash
+curl http://localhost:8000/v1/chat/completions \
+  -H "Authorization: Bearer $API_KEY" -H "Content-Type: application/json" \
+  -d '{"model": "palimpsest/supermode", "messages": [{"role": "user", "content": "Hello"}]}'
+```
+
+For each request the gateway estimates its size and whether it carries images or tools, drops every model that cannot take it or has no key ready, and ranks the rest by quality, then by capacity left. If the chosen model fails, the next best, ranked again from the live pool, takes over, up to `PALIMPSEST_SUPERMODE_FALLBACK_MODELS` more (default 2), all inside one deadline. The model that answered is in the response `model` field and the `X-Palimpsest-Model` header. Quality, context window and capabilities start from a built-in table and are corrected by what the gateway learns; `PALIMPSEST_SUPERMODE_QUALITY` and `PALIMPSEST_SUPERMODE_PROFILES` let you set them yourself. The dashboard's **Supermode** page shows the live ranking, what was picked and why, and where requests went. Details in the [User Guide](docs/USER_GUIDE.md#supermode).
 
 ## Two ways in
 
@@ -319,8 +335,11 @@ Everything is configured through `PALIMPSEST_*` environment variables. The full 
 | `PALIMPSEST_COOLDOWN_SECONDS` | `60` | How long a key rests after a transient failure. |
 | `PALIMPSEST_VERBATIM_TURNS_N` | `4` | Recent turns re-sent verbatim when a provider fails over. |
 | `PALIMPSEST_USER_DAILY_CAP` | - | Per-user daily request cap. Unset = no per-user cap. |
+| `PALIMPSEST_SUPERMODE_FALLBACK_MODELS` | `2` | Other models supermode tries, best first, when the chosen one fails. `0` = none. |
+| `PALIMPSEST_SUPERMODE_QUALITY` | `{}` | JSON of model id to quality score (0 to 100) that replaces the built-in score. |
+| `PALIMPSEST_SUPERMODE_PROFILES` | `{}` | JSON of model id to `{"context", "vision", "tools"}` that replaces what the gateway believes about the model. |
 
-*13 of ~40 settings; full reference with defaults and bounds → [docs/USER_GUIDE.md](docs/USER_GUIDE.md)*
+*16 of ~45 settings; full reference with defaults and bounds → [docs/USER_GUIDE.md](docs/USER_GUIDE.md)*
 
 Most of these are also tunable at runtime through the Operator API, without a restart.
 
@@ -393,6 +412,10 @@ Send `X-Session-ID` on every request in a conversation. Omit it and the gateway 
 | `/operator/v1/alerts/test` | `POST` | Send one test message to the webhook. |
 | `/operator/v1/audit` | `GET` | Operator actions, newest first. |
 | `/operator/v1/export/usage.csv`, `requests.csv`, `audit.csv` | `GET` | CSV exports. |
+| `/operator/v1/supermode` | `GET` | Supermode settings, statistics for 1 to 90 days, recent supermode requests and the request limits learned for keys. |
+| `/operator/v1/supermode/ranking` | `GET` | The ranking supermode would use now for a request of a given size (`tokens`, `vision`, `tools`), with the reason each dropped model was left out. |
+| `/operator/v1/live` | `GET` | Live request steps after a cursor, for the Live Flow page. Recorded only while a page is polling; metadata only. |
+| `/operator/v1/calls` | `GET` | The newest finished requests, each with every key and model it tried. |
 | `/operator/v1/system` | `GET` | Process and Redis health and retention. |
 | `/operator/v1/metrics` | `GET` | Prometheus text format; scrape with an operator bearer token. |
 
@@ -402,7 +425,7 @@ Send `X-Session-ID` on every request in a conversation. Omit it and the gateway 
 
 `/dashboard/` is a static single-page app served by the same process. It has no auth of its own: it holds your operator key in `sessionStorage` and sends it as a bearer token, which the operator API authenticates as it does for any client. It is served under a strict Content-Security-Policy with framing disabled, and assets are sent `no-cache` so a redeployed bundle is picked up immediately.
 
-Sections: **Overview**, **Pool Keys**, **Utilization & Failover**, **Users**, **Usage**, **Sessions**, **Requests**, **Performance**, **Costs**, **Alerts**, **Audit & Export**, **System** and **Configuration**. Message content is never shown. See the [User Guide](docs/USER_GUIDE.md#operator-dashboard) for what each one does.
+Sections: **Overview**, **Live Flow**, **Supermode**, **Pool Keys**, **Utilization & Failover**, **Users**, **Usage**, **Sessions**, **Requests**, **Performance**, **Costs**, **Alerts**, **Audit & Export**, **System** and **Configuration**. Message content is never shown. See the [User Guide](docs/USER_GUIDE.md#operator-dashboard) for what each one does.
 
 ## Observability
 
