@@ -48,8 +48,11 @@
   --gutter: 32px;
 }
 
+/* Dark theme: follows the system unless the operator picked one with the
+   top-bar button (saved as data-theme on <html>). */
 @media (prefers-color-scheme: dark) {
-  :root {
+  :root:not([data-theme='light']) {
+    color-scheme: dark;
     --bg: #0d1317;
     --surface: #141c22;
     --surface-2: #18222a;
@@ -79,6 +82,42 @@
     --shadow: 0 16px 48px rgba(0, 0, 0, 0.6), 0 2px 6px rgba(0, 0, 0, 0.3);
     --shadow-sm: 0 1px 2px rgba(0, 0, 0, 0.35);
   }
+}
+
+:root[data-theme='dark'] {
+  color-scheme: dark;
+  --bg: #0d1317;
+  --surface: #141c22;
+  --surface-2: #18222a;
+  --border: #24313b;
+  --border-strong: #344451;
+  --text: #e6edf2;
+  --text-2: #c2ced7;
+  --muted: #93a3b0;
+  --ink: #e6edf2;
+  --ink-hover: #ffffff;
+  --ink-text: #0d1317;
+  --accent: #5aaaf2;
+  --accent-hover: #7bbcf5;
+  --accent-text: #08131c;
+  --accent-soft: #172a3d;
+  --accent-soft-text: #9fd0f8;
+  --head-bg: #1a242c;
+  --group-bg: #1a242c;
+  --error: #ff8fa3;
+  --error-bg: #351a20;
+  --ok: #7fd6a2;
+  --ok-bg: #15291d;
+  --warn: #ffc25c;
+  --warn-bg: #33270e;
+  --idle: #a7b6c1;
+  --idle-bg: #1f2a33;
+  --shadow: 0 16px 48px rgba(0, 0, 0, 0.6), 0 2px 6px rgba(0, 0, 0, 0.3);
+  --shadow-sm: 0 1px 2px rgba(0, 0, 0, 0.35);
+}
+
+:root[data-theme='light'] {
+  color-scheme: light;
 }
 
 @font-face {
@@ -275,6 +314,12 @@ h4 {
   color: var(--text);
 }
 
+/* Light/dark switch: sits just left of Sign out. */
+.theme-toggle {
+  flex: 0 0 auto;
+  margin: 0 4px 0 auto;
+}
+
 /* -- login ------------------------------------------------------------------ */
 
 .login {
@@ -387,11 +432,17 @@ h4 {
 
 /* The wordmark is dark: give it a light plate on a dark card. */
 @media (prefers-color-scheme: dark) {
-  .login-logo {
+  :root:not([data-theme='light']) .login-logo {
     padding: 10px 12px;
     background: #ffffff;
     border-radius: 8px;
   }
+}
+
+:root[data-theme='dark'] .login-logo {
+  padding: 10px 12px;
+  background: #ffffff;
+  border-radius: 8px;
 }
 
 .topbar .ghost {

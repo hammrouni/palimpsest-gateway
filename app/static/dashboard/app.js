@@ -207,6 +207,8 @@ const UI_ICONS = {
   refresh: [['path', {d: 'M20 11a8 8 0 0 0-14.6-4.5L4 8'}], ['path', {d: 'M4 3v5h5'}], ['path', {d: 'M4 13a8 8 0 0 0 14.6 4.5L20 16'}], ['path', {d: 'M20 21v-5h-5'}]],
   plus: [['path', {d: 'M12 5v14M5 12h14'}]],
   close: [['path', {d: 'M6 6l12 12M18 6 6 18'}]],
+  sun: [['circle', {cx: '12', cy: '12', r: '4'}], ['path', {d: 'M12 2v2M12 20v2M4.9 4.9l1.4 1.4M17.7 17.7l1.4 1.4M2 12h2M20 12h2M4.9 19.1l1.4-1.4M17.7 6.3l1.4-1.4'}]],
+  moon: [['path', {d: 'M20 14.5A8 8 0 0 1 9.5 4a8 8 0 1 0 10.5 10.5z'}]],
 };
 
 function navIcon(id) {
@@ -687,6 +689,39 @@ function setNavOpen(open) {
   els.app.classList.toggle('nav-open', open);
   document.getElementById('nav-toggle').setAttribute('aria-expanded', String(open));
 }
+
+/* -- colour theme ------------------------------------------------------------
+ *
+ * The top-bar button flips between light and dark; theme.js remembers the
+ * choice and applies it before the first paint. Until the operator picks one,
+ * the system theme applies and the button follows it. */
+
+const darkQuery = window.matchMedia('(prefers-color-scheme: dark)');
+
+function currentTheme() {
+  const chosen = document.documentElement.getAttribute('data-theme');
+  if (chosen === 'light' || chosen === 'dark') {
+    return chosen;
+  }
+  return darkQuery.matches ? 'dark' : 'light';
+}
+
+function drawThemeToggle() {
+  const toggle = document.getElementById('theme-toggle');
+  const dark = currentTheme() === 'dark';
+  const label = dark ? 'Switch to light mode' : 'Switch to dark mode';
+  toggle.replaceChildren(uiIcon(dark ? 'sun' : 'moon', 18));
+  toggle.setAttribute('aria-label', label);
+  toggle.title = label;
+}
+
+document.getElementById('theme-toggle').addEventListener('click', () => {
+  window.saveTheme(currentTheme() === 'dark' ? 'light' : 'dark');
+  drawThemeToggle();
+});
+
+darkQuery.addEventListener('change', drawThemeToggle);
+drawThemeToggle();
 
 document.getElementById('nav-toggle').addEventListener('click', () => {
   setNavOpen(!els.app.classList.contains('nav-open'));
