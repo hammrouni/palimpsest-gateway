@@ -17,10 +17,12 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
+import math
 import re
 import time
 from collections.abc import AsyncIterator
-from dataclasses import dataclass
+from dataclasses import dataclass, field, replace
+from datetime import UTC, datetime
 from typing import Annotated
 
 from fastapi import APIRouter, Depends, Header, Request
@@ -42,10 +44,14 @@ from app.logging.request_logger import log_request
 from app.pool.registry import PoolRegistry
 from app.pool.tokens import add_tokens
 from app.provider.adapter import AttemptResult
+from app.router import live as live_feed
 from app.router.exhaustion import PoolExhaustedError, render_exhausted, render_fatal
-from app.router.failover import FailoverTrace, execute_with_failover
+from app.router.failover import FailoverTrace, capacity_refusal, execute_with_failover
+from app.router.learning import Needs, model_refused, record_request_refused
 from app.router.master import effective_model
 from app.router.rebuild import identity_rebuild
+from app.router.supermode import is_supermode, needs_of, rank_models
+from app.router.supermode_stats import record as record_supermode
 from app.schemas.chat import (
     ChatCompletionRequest,
     ChatCompletionResponse,
@@ -61,6 +67,7 @@ from app.session.policy import (
 from app.session.store import SessionStore
 from app.settlement import SettlementInput, admit, refund, settle
 from app.store.redis_store import RedisStore
+from app.usage.calls import record as record_call
 from app.usage.store import SERVED_OUTCOMES, UsageStore, track
 
 router = APIRouter(prefix="/v1", tags=["chat"])
@@ -208,14 +215,39 @@ class _Turn:
     stream_started: bool = False
     # Milliseconds until the first streamed chunk reached the client.
     first_chunk_ms: int | None = None
+    # Seconds the client was told to wait (Retry-After) on a throttled refusal.
+    retry_after_s: int | None = None
+    # Supermode: the request named ``palimpsest/supermode`` and ``model`` is the
+    # gateway's pick; ``needs`` ranks the next model if this one cannot serve.
+    supermode: bool = False
+    needs: Needs | None = None
+    # Supermode statistics: the model first picked and each move to another one.
+    picked: str | None = None
+    hops: list[dict] = field(default_factory=list)
+    # The Live Flow page is open: send it what this request does, as it happens.
+    live: bool = False
+    # For the call history: what the client asked for and how it was routed.
+    requested: str = ""
+    routed_by: str | None = None
+    tools: bool = False
+    started_wall: float = field(default_factory=time.time)
+    # When the whole request, every model of a supermode request included, must be over.
+    deadline: float = field(default_factory=lambda: time.monotonic() + get_settings().provider_timeout * 2)
 
     def latency_ms(self) -> int:
         return int((time.monotonic() - self.started) * 1000)
+
+    def emit(self, event: dict) -> None:
+        """Send one event to the Live Flow page, if it is open (never delays the request)."""
+        if self.live:
+            track(live_feed.emit(self.redis, {"rid": self.request_id, **event}))
 
     def headers(self) -> dict[str, str]:
         headers = {"X-Request-ID": self.request_id}
         if self.session_id:
             headers["X-Session-ID"] = self.session_id
+        if self.supermode:
+            headers["X-Palimpsest-Model"] = self.model
         return headers
 
     def log(
@@ -228,6 +260,16 @@ class _Turn:
     ) -> None:
         """One request-log record and one usage record per terminal outcome."""
         attempts = trace.attempts if trace is not None else ()
+        self.emit({
+            "kind": "done", "status_code": status_code, "outcome": outcome,
+            "latency_ms": self.latency_ms(), "model": self.model, "stream": self.stream,
+            "provider": next((a.provider.value for a in reversed(attempts)), None),
+            "attempts": len(attempts), "ttft_ms": self.first_chunk_ms,
+            "prompt_tokens": self.prompt_tokens, "completion_tokens": self.completion_tokens,
+        })
+        track(self._record_call(status_code, outcome, attempts))
+        if self.supermode:
+            track(self._record_supermode(status_code, outcome, attempts))
         log_request(
             request_id=self.request_id,
             settle_id=self.settle_id,
@@ -266,6 +308,68 @@ class _Turn:
             )
         )
 
+    async def _record_call(self, status_code: int, outcome: str, attempts: tuple) -> None:
+        """The call history: this request and every key and model it tried."""
+        await record_call(
+            self.redis,
+            {
+                "rid": self.request_id,
+                "t0": int(self.started_wall * 1000),
+                "t1": int(time.time() * 1000),
+                "account_id": self.account_id,
+                "requested": self.requested,
+                "model": self.model,
+                "routed_by": self.routed_by,
+                "stream": self.stream,
+                "tools": self.tools,
+                "status_code": status_code,
+                "outcome": outcome,
+                "latency_ms": self.latency_ms(),
+                "ttft_ms": self.first_chunk_ms,
+                "prompt_tokens": self.prompt_tokens,
+                "completion_tokens": self.completion_tokens,
+                "attempts": [
+                    {
+                        "key_id": a.key_id,
+                        "provider": a.provider.value,
+                        "model": a.model,
+                        "ok": a.outcome == "success",
+                        "status_code": a.status_code,
+                        "classification": a.classification,
+                        "ms": a.ms,
+                    }
+                    for a in attempts
+                    if a.outcome != "skipped"
+                ],
+                "hops": self.hops,
+            },
+        )
+
+    async def _record_supermode(self, status_code: int, outcome: str, attempts: tuple) -> None:
+        """Supermode statistics: what was picked, who answered, where it moved on."""
+        served = self.model if outcome in SERVED_OUTCOMES and status_code < 400 else None
+        needs = self.needs
+        await record_supermode(
+            self.redis,
+            {
+                "request_id": self.request_id,
+                "account_id": self.account_id,
+                "picked": self.picked,
+                "served": served,
+                "provider": next((a.provider.value for a in reversed(attempts)), None),
+                "outcome": outcome,
+                "status_code": status_code,
+                "latency_ms": self.latency_ms(),
+                "attempts": len(attempts),
+                "hops": self.hops,
+                "needs": {
+                    "tokens": needs.tokens if needs else None,
+                    "vision": bool(needs and needs.vision),
+                    "tools": bool(needs and needs.tools),
+                },
+            },
+        )
+
     async def _record_usage(
         self,
         status_code: int,
@@ -297,6 +401,7 @@ class _Turn:
             provider=provider,
             key_id=key_id,
             ttft_ms=self.first_chunk_ms,
+            retry_after_s=self.retry_after_s,
         )
         if (
             outcome not in SERVED_OUTCOMES
@@ -355,6 +460,9 @@ class _Turn:
     def error(self, err: GatewayError) -> GatewayError:
         """Attach this request's identity headers to an error about to be raised."""
         err.headers = {**(err.headers or {}), **self.headers()}
+        retry_after = err.headers.get("Retry-After")
+        if retry_after and retry_after.isdigit():
+            self.retry_after_s = int(retry_after)
         return err
 
 
@@ -382,6 +490,14 @@ def _empty_trace(model: str) -> FailoverTrace:
     return FailoverTrace(model=model, attempts=(), terminal="fatal", retry_count=0)
 
 
+def _seconds_until(moment: datetime | None) -> int | None:
+    """Whole seconds from now until ``moment`` (at least 1), or None."""
+    if moment is None:
+        return None
+    seconds = math.ceil((moment - datetime.now(UTC)).total_seconds())
+    return max(1, seconds)
+
+
 async def _admit(turn: _Turn) -> None:
     """Admission gate; a rejection costs nothing."""
     try:
@@ -400,20 +516,24 @@ async def _admit(turn: _Turn) -> None:
             )
         ) from err
     if not admission.admitted:
+        # Tell the client when to come back, as the pool-exhausted 429 does.
+        wait = _seconds_until(admission.next_reset)
+        err = turn.error(
+            GatewayError(
+                message=admission.message,
+                status_code=429,
+                error_type="rate_limit_error",
+                code=admission.code,
+                headers={"Retry-After": str(wait)} if wait is not None else None,
+            )
+        )
         turn.log(
             429,
             "rejected_user_cap"
             if admission.code == "user_quota_exhausted"
             else "rejected_pool_low_water",
         )
-        raise turn.error(
-            GatewayError(
-                message=admission.message,
-                status_code=429,
-                error_type="rate_limit_error",
-                code=admission.code,
-            )
-        )
+        raise err
 
 
 async def _bind_session(turn: _Turn, x_session_id: str | None) -> dict | None:
@@ -526,6 +646,19 @@ async def _unexpected_failure(
     )
 
 
+async def _next_supermode_model(turn: _Turn, tried: list[str]) -> str | None:
+    """The best model not tried yet that can serve now, or None (also outside supermode)."""
+    if not turn.supermode or turn.needs is None:
+        return None
+    settings = get_settings()
+    if len(tried) > settings.supermode_fallback_models or time.monotonic() >= turn.deadline:
+        return None
+    ranked = await rank_models(
+        PoolRegistry(turn.redis), turn.needs, limit=1, exclude=frozenset(tried)
+    )
+    return ranked[0] if ranked else None
+
+
 async def _run_failover(
     turn: _Turn,
     request: ChatCompletionRequest,
@@ -553,25 +686,77 @@ async def _run_failover(
     else:
         rebuild_hook = identity_rebuild
 
-    try:
-        result, trace = await execute_with_failover(
-            PoolRegistry(turn.redis),
-            request.model,
-            provider_messages,
-            session=session_ref,
-            rebuild_hook=rebuild_hook,
-            **extra,
-            **_provider_kwargs(request),
+    # Supermode moves to the next model when every key of this one is spent or
+    # the model turns the request down. The next model is ranked again live, so
+    # keys paused by this very request are already out of the running.
+    turn.deadline = time.monotonic() + get_settings().provider_timeout * 2
+    earlier: tuple = ()
+    tried: list[str] = []
+    refused_request: list[str] = []
+    model = turn.model
+    while True:
+        turn.model = model
+        tried.append(model)
+        try:
+            result, trace = await execute_with_failover(
+                PoolRegistry(turn.redis),
+                model,
+                provider_messages,
+                session=session_ref,
+                rebuild_hook=rebuild_hook,
+                observer=turn.emit if turn.live else None,
+                deadline=turn.deadline,
+                **extra,
+                **_provider_kwargs(request),
+            )
+        except PoolExhaustedError as exc:
+            if exc.trace is not None:
+                earlier = (*earlier, *exc.trace.attempts)
+            following = await _next_supermode_model(turn, tried)
+            if following is not None:
+                logger.info(
+                    "supermode fallback request_id=%s from=%s to=%s cause=exhausted",
+                    turn.request_id, model, following,
+                )
+                turn.hops.append({"from": model, "to": following, "cause": "exhausted"})
+                turn.emit({"kind": "hop", **turn.hops[-1]})
+                model = following
+                continue
+            if exc.trace is not None:
+                exc.trace = replace(exc.trace, attempts=earlier)
+            rendered = turn.error(render_exhausted(exc, model=model))
+            if exc.trace is not None:
+                await turn.settle(exc.trace, rendered.status_code, quiet=True)
+            outcome = "exhausted_429" if rendered.status_code == 429 else "exhausted_503"
+            turn.log(rendered.status_code, outcome, trace=exc.trace)
+            raise rendered from exc
+        except Exception as exc:
+            raise await _unexpected_failure(turn, trace, exc) from exc
+        cause = (
+            model_refused(result.error)
+            if not result.ok and turn.supermode and result.error is not None
+            else None
         )
-    except PoolExhaustedError as exc:
-        rendered = turn.error(render_exhausted(exc, model=request.model))
-        if exc.trace is not None:
-            await turn.settle(exc.trace, rendered.status_code, quiet=True)
-        outcome = "exhausted_429" if rendered.status_code == 429 else "exhausted_503"
-        turn.log(rendered.status_code, outcome, trace=exc.trace)
-        raise rendered from exc
-    except Exception as exc:
-        raise await _unexpected_failure(turn, trace, exc) from exc
+        if cause is not None:
+            following = await _next_supermode_model(turn, tried)
+            if following is not None:
+                earlier = (*earlier, *trace.attempts)
+                if cause == "request":
+                    refused_request.append(model)
+                logger.info(
+                    "supermode fallback request_id=%s from=%s to=%s cause=%s",
+                    turn.request_id, model, following, cause,
+                )
+                turn.hops.append({"from": model, "to": following, "cause": cause})
+                turn.emit({"kind": "hop", **turn.hops[-1]})
+                model = following
+                continue
+        if earlier:
+            trace = replace(trace, attempts=(*earlier, *trace.attempts))
+        if result.ok and refused_request:
+            # Another model took what these refused: the refusal was theirs.
+            await record_request_refused(turn.redis, refused_request)
+        break
 
     if not result.ok:
         classification = trace.classification
@@ -787,10 +972,21 @@ async def chat_completions(
     """
     # A valid client X-Request-ID is echoed but never used as the settlement
     # idempotency key, so a reused ID cannot look like a duplicate settlement.
+    requested_model = request.model
     served_model = await effective_model(PoolRegistry(store.redis), request.model)
     if served_model != request.model:
         # A master model is on: it serves the request, whatever the client asked.
         request = request.model_copy(update={"model": served_model})
+
+    supermode = is_supermode(request.model)
+    needs = needs_of(request) if supermode else None
+    picked: str | None = None
+    if needs is not None:
+        # The gateway picks the model: best quality that fits and can serve now.
+        ranked = await rank_models(PoolRegistry(store.redis), needs, limit=1)
+        if ranked:
+            request = request.model_copy(update={"model": ranked[0]})
+            picked = ranked[0]
 
     request_id = (
         x_request_id
@@ -807,10 +1003,33 @@ async def chat_completions(
         started=time.monotonic(),
         redis=store.redis,
         session_store=session_store,
+        supermode=supermode,
+        needs=needs,
+        picked=picked,
+        live=await live_feed.watching(store.redis),
+        requested=requested_model[:120],
+        routed_by="supermode" if supermode else ("master" if served_model != requested_model else None),
+        tools=bool(request.tools),
     )
+
+    turn.emit({
+        "kind": "request", "account_id": account["id"], "requested": turn.requested,
+        "model": request.model, "stream": request.stream,
+        "routed_by": turn.routed_by, "tools": turn.tools,
+    })
 
     await _admit(turn)
     metadata = await _bind_session(turn, x_session_id)
+
+    # No key can serve the model right now: answer before the session lock and
+    # history read, and give the admission back, so a client retrying through a
+    # rate-limit wait costs neither quota nor work.
+    refusal = await capacity_refusal(PoolRegistry(store.redis), request.model)
+    if refusal is not None:
+        await refund(turn.account_id, redis=turn.redis)
+        rendered = turn.error(render_exhausted(refusal, model=request.model))
+        turn.log(rendered.status_code, "exhausted_429", trace=refusal.trace)
+        raise rendered
 
     settings = get_settings()
     try:
@@ -856,7 +1075,7 @@ async def chat_completions(
                 "id": generate_chat_id(),
                 "object": "chat.completion",
                 "created": int(time.time()),
-                "model": request.model,
+                "model": turn.model,
                 "choices": [
                     {
                         "index": 0,

@@ -16,6 +16,7 @@ from datetime import UTC, datetime
 from app.pool.limits import get_observed_many, quota_blocked_until
 from app.pool.models import KeyRecord, Provider, window_bounds
 from app.pool.registry import PoolRegistry
+from app.router.learning import keys_at_learned_limit
 
 _USED_COUNTER_PREFIX = "pgw:pool:key"
 
@@ -98,6 +99,7 @@ async def select_candidates(
     model: str,
     excluded: frozenset[str] = frozenset(),
     preferred_provider: Provider | None = None,
+    records: list[KeyRecord] | None = None,
 ) -> list[Candidate]:
     """The deterministic, ordered candidate list (never raises).
 
@@ -107,8 +109,10 @@ async def select_candidates(
     provider first, then key_id).
 
     Also excludes keys whose last observed rate limit is spent and has not reset yet.
+    Keys that already sent their learned requests-per-minute this minute (see
+    ``app.router.learning``) go last, so traffic goes to keys with room first.
     """
-    routable = await registry.routable_keys(model=model)
+    routable = await registry.routable_keys(model=model, records=records)
     universe = [record for record in routable if record.id not in excluded]
 
     remaining_by_id = await _remaining_by_id(registry, universe)
@@ -149,7 +153,11 @@ async def select_candidates(
 
     tier3 = sorted(uncapped, key=_uncapped_key)
 
-    return [*tier1, *tier2, *tier3]
+    ordered = [*tier1, *tier2, *tier3]
+    full = await keys_at_learned_limit(registry.redis, [c.key_id for c in ordered])
+    if not full:
+        return ordered
+    return [c for c in ordered if c.key_id not in full] + [c for c in ordered if c.key_id in full]
 
 
 async def select(

@@ -34,7 +34,7 @@ Operator = Annotated[dict, Depends(get_current_operator)]
 
 
 def _sum_days(days: list[dict[str, Any]]) -> dict[str, int]:
-    keys = ("requests", "ok", "errors_4xx", "errors_5xx", "exhausted", "failovers",
+    keys = ("requests", "ok", "errors_4xx", "errors_5xx", "exhausted", "throttled", "repeats", "failovers",
             "prompt_tokens", "completion_tokens")
     return {k: sum(d.get(k, 0) for d in days) for k in keys}
 
@@ -62,8 +62,8 @@ async def overview(
     redis = store.redis
     stats = StatsStore(redis)
     current = await stats.daily(days)
-    both = await stats.daily(days * 2)
-    previous = _sum_days(both["daily"][: days])  # oldest ``days`` days of the doubled window
+    # The ``days`` days before the current window: pool-wide totals only.
+    previous = _sum_days([await stats.totals_between(days, skip=days)])
     util = await utilization_view(redis=redis)
     pricing = await PricingStore(redis).get()
     usage = await UsageStore(redis).usage(days)
@@ -82,7 +82,7 @@ async def overview(
         key=lambda a: a["requests"],
         reverse=True,
     )
-    alerts = await evaluate(redis)
+    alerts = await evaluate(redis, util=util)
     return {
         "days": days,
         "totals": current["totals"],

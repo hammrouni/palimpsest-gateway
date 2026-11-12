@@ -28,6 +28,8 @@ from app.api.operator import router as operator_router
 from app.api.operator_accounts import router as operator_accounts_router
 from app.api.operator_config import router as config_router
 from app.api.operator_insights import router as operator_insights_router
+from app.api.operator_live import router as operator_live_router
+from app.api.operator_supermode import router as operator_supermode_router
 from app.api.operator_usage import router as operator_usage_router
 from app.api.pool_routes import ops_router as pool_ops_router
 from app.api.pool_routes import router as pool_router
@@ -95,7 +97,7 @@ async def seed_provider_key(redis_client) -> None:
     except ValidationError:
         log.error(
             "PALIMPSEST_PROVIDER_API_KEY not added: invalid PALIMPSEST_PROVIDER_NAME "
-            "or PALIMPSEST_PROVIDER_MODEL (providers: openai, anthropic, google, openrouter, mistral, groq, custom)"
+            "or PALIMPSEST_PROVIDER_MODEL (providers: openai, anthropic, google, openrouter, mistral, groq, zai, xai, github, custom)"
         )
         return
     try:
@@ -171,6 +173,21 @@ def _validation_param(exc: RequestValidationError) -> str | None:
         if named:
             return named[-1]
     return None
+
+
+def _validation_message(exc: RequestValidationError) -> str:
+    """``Invalid request.``, or the reason when a ``base_url`` was refused.
+
+    The reasons are fixed sentences written for the operator ("must not point at a
+    cloud metadata service") and never repeat the submitted value, so they are
+    safe to return; other fields keep the generic message.
+    """
+    for err in exc.errors():
+        if err.get("loc", ())[-1:] == ("base_url",) or "base_url" in str(err.get("msg", "")):
+            message = str(err.get("msg", "")).removeprefix("Value error, ")
+            if message:
+                return message[:200]
+    return "Invalid request."
 
 
 def _envelope(error_type: str, message: str, code: str, param: str | None = None) -> dict:
@@ -265,6 +282,8 @@ def create_app() -> FastAPI:
     app.include_router(config_router)
     app.include_router(operator_usage_router)
     app.include_router(operator_insights_router)
+    app.include_router(operator_supermode_router)
+    app.include_router(operator_live_router)
     app.include_router(pool_router)
     app.include_router(pool_ops_router)
 
@@ -288,7 +307,7 @@ def create_app() -> FastAPI:
         return JSONResponse(
             status_code=422,
             content=_envelope(
-                "invalid_request_error", "Invalid request.", "invalid_request",
+                "invalid_request_error", _validation_message(exc), "invalid_request",
                 _validation_param(exc),
             ),
             headers=_request_id_header(request),

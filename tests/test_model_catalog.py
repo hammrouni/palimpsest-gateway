@@ -150,7 +150,7 @@ async def test_existing_key_route_uses_its_stored_key_and_never_returns_it(
     ).id
     seen = {}
 
-    async def fake(provider, api_key):
+    async def fake(provider, api_key, base_url=None):
         seen.update(provider=provider, key=api_key)
         return [{"id": "m1", "name": None, "free": False}]
 
@@ -167,7 +167,7 @@ async def test_existing_key_route_uses_its_stored_key_and_never_returns_it(
 async def test_new_key_route_lists_with_the_pasted_key(client, headers, monkeypatch):
     import app.api.pool_routes as routes
 
-    async def fake(provider, api_key):
+    async def fake(provider, api_key, base_url=None):
         assert (provider, api_key) == (Provider.OPENAI, "sk-typed")
         return [{"id": "gpt-4o-mini", "name": None}]
 
@@ -186,7 +186,7 @@ async def test_new_key_route_lists_with_the_pasted_key(client, headers, monkeypa
 async def test_provider_failure_is_502_not_a_signout(client, headers, monkeypatch):
     import app.api.pool_routes as routes
 
-    async def refused(provider, api_key):
+    async def refused(provider, api_key, base_url=None):
         raise catalog.CatalogError("openai refused this key when listing models.")
 
     monkeypatch.setattr(routes, "fetch_models", refused)

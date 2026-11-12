@@ -22,6 +22,15 @@ _HARD_QUOTA_RE = re.compile(
     r"exceeded your current quota|out of credits|credit balance is too low)"
 )
 
+# Google names the model a spent quota belongs to: "Quota exceeded for metric:
+# ..., limit: 0, model: gemini-3.1-pro". The limit is per model, so only that
+# model is out on this key; its other models still have their own quota.
+_MODEL_QUOTA_RE = re.compile(r"(?i)quota exceeded for metric:[^\n]*?\blimit:\s*(\d+)\s*,\s*model:")
+
+# "Model 'x' is currently unavailable": the model is down for now at the provider.
+# Nothing is wrong with the request, so it is retried elsewhere, not returned.
+_MODEL_DOWN_RE = re.compile(r"(?i)(currently|temporarily) (unavailable|not available|disabled)")
+
 # Groq/OpenAI-style "Request too large ... Limit 8000, Requested 14658": this one
 # request can never fit, so every key would refuse it and none is unhealthy.
 _REQUEST_TOO_LARGE_RE = re.compile(r"(?i)request too large")
@@ -108,6 +117,8 @@ def classify(error: ProviderAttemptError) -> Classification:
         return Classification(
             "fatal", 400, "context_length_exceeded", _REQUEST_TOO_LARGE_MESSAGE
         )
+    if status == 429 and _MODEL_QUOTA_RE.search(message):
+        return Classification("model_scoped", 429, "rate_limit_exceeded", RATE_LIMIT)
     if status == 429 and _HARD_QUOTA_RE.search(message):
         return Classification("exhausted", 429, "rate_limit_exceeded", RATE_LIMIT)
     if status == 429:
@@ -116,6 +127,8 @@ def classify(error: ProviderAttemptError) -> Classification:
         return Classification("exhausted", 429, "rate_limit_exceeded", RATE_LIMIT)
     if (status == 400 or status == 403) and _QUOTA_MARKER_RE.search(message):
         return Classification("exhausted", 429, "rate_limit_exceeded", RATE_LIMIT)
+    if status == 400 and _MODEL_DOWN_RE.search(message):
+        return Classification("transient", 503, "provider_unavailable", PROVIDER_UNAVAILABLE)
     if status == 400 and _CONTEXT_MARKER_RE.search(message):
         # Prompt size vs. the model's window: actionable, leaks no credentials.
         return Classification(
@@ -158,6 +171,13 @@ def pause_reason(error: ProviderAttemptError) -> str:
     """
     status = error.status_code
     message = error.message or ""
+    model_quota = model_quota_limit(error)
+    if model_quota == 0:
+        return "model_unavailable"  # this plan does not include the model at all
+    if model_quota is not None:
+        return "daily_limit" if _DAILY_LIMIT_RE.search(message) else "rate_limit"
+    if status == 400 and _MODEL_DOWN_RE.search(message):
+        return "provider_error"  # the model is down at the provider for now
     if status == 402 or (_HARD_QUOTA_RE.search(message) and status in (429, 403, 400)):
         return "no_credits"
     if status == 429 or (status in (400, 403) and _QUOTA_MARKER_RE.search(message)):
@@ -171,6 +191,14 @@ def pause_reason(error: ProviderAttemptError) -> str:
     if 500 <= status <= 599:
         return "provider_error"
     return "other"
+
+
+def model_quota_limit(error: ProviderAttemptError) -> int | None:
+    """The limit of a per-model quota a 429 names (0: the plan has none), else None."""
+    if error.status_code != 429:
+        return None
+    match = _MODEL_QUOTA_RE.search(error.message or "")
+    return int(match.group(1)) if match else None
 
 
 def is_connectivity_error(error: ProviderAttemptError) -> bool:

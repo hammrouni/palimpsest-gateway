@@ -63,29 +63,46 @@ def _reset_headers(next_reset: datetime | None, retry_count: int) -> dict[str, s
     return headers
 
 
+def _rate_limited_tries(error: PoolExhaustedError) -> int | None:
+    """How many keys were tried, when every failed try was a rate or quota limit.
+
+    None when nothing was tried or any try failed for another reason (an
+    outage, a refused key): then the pool is not simply busy.
+    """
+    attempts = getattr(error.trace, "attempts", None) or ()
+    failed = [a for a in attempts if a.outcome == "failed"]
+    if not failed:
+        return None
+    if all(a.status_code == 429 or a.classification == "exhausted" for a in failed):
+        return len(failed)
+    return None
+
+
+def _retry_text(wait: int | None) -> str:
+    if wait is not None and wait <= _SHORT_WAIT_SECONDS:
+        return f"Retry in about {wait} second{'s' if wait != 1 else ''}."
+    if wait is not None:
+        return f"Retry in {_in_words(wait)}."
+    return "Retry after the next key reset."
+
+
 def render_exhausted(error: PoolExhaustedError, model: str) -> GatewayError:
     """Render a ``PoolExhaustedError`` with retry headers.
 
-    ``pool_exhausted`` (no key has capacity right now) is a 429, so clients
-    that back off on 429 wait for the reset. A spent retry budget is a 503.
+    A 429 tells the client to back off and come back (``Retry-After``): no key
+    has capacity right now (``pool_exhausted``), or every key the retry budget
+    reached was rate-limited. A budget spent on other failures is a 503.
     """
-    if error.code == "pool_exhausted":
-        wait = _wait_seconds(error.next_reset)
-        if wait is not None and wait <= _SHORT_WAIT_SECONDS:
+    wait = _wait_seconds(error.next_reset)
+    tried = _rate_limited_tries(error)
+    if error.code == "pool_exhausted" or tried is not None:
+        if tried is not None:
             message = (
-                f"No active capacity available for model {model!r}. "
-                f"Retry in about {wait} second{'s' if wait != 1 else ''}."
-            )
-        elif wait is not None:
-            message = (
-                f"No active capacity available for model {model!r}. "
-                f"Retry in {_in_words(wait)}."
+                f"All {tried} key{'s' if tried != 1 else ''} tried for model {model!r} "
+                f"are rate-limited. {_retry_text(wait)}"
             )
         else:
-            message = (
-                f"No active capacity available for model {model!r}. "
-                "Retry after the next key reset."
-            )
+            message = f"No active capacity available for model {model!r}. {_retry_text(wait)}"
         status_code = 429
     else:
         message = (

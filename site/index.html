@@ -4,7 +4,7 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>Palimpsest Gateway — One OpenAI-compatible endpoint for all your LLM keys</title>
-<meta name="description" content="Self-hosted, OpenAI-compatible gateway. Pool OpenAI, Anthropic, Gemini and OpenRouter keys, fail over automatically, and keep every conversation going. MIT licensed.">
+<meta name="description" content="Self-hosted, OpenAI-compatible gateway. Pool OpenAI, Anthropic, Gemini, OpenRouter, Mistral, Groq, Z.ai, GitHub Models and custom keys, let it pick the best model, fail over automatically, and keep every conversation going. MIT licensed.">
 <meta name="theme-color" content="#0d1a20">
 <link rel="canonical" href="https://hammrouni.github.io/palimpsest-gateway/">
 <meta property="og:type" content="website">
@@ -154,7 +154,7 @@
 
 <header class="top">
   <div class="wrap">
-    <a class="brand" href="#top"><img src="assets/icon-mark-transparent.png" alt="" width="30" height="30"><span>Palimpsest Gateway</span></a>
+    <a class="brand" href="#top"><img src="assets/icon-64.png" alt="" width="30" height="30" decoding="async"><span>Palimpsest Gateway</span></a>
     <nav class="links">
       <a href="#how">How it works</a>
       <a href="#features">Features</a>
@@ -168,10 +168,10 @@
 <main id="top">
   <section class="hero" style="border-top:none">
     <div class="wrap">
-      <img class="logo" src="assets/logo-full-light-800.png" alt="Palimpsest Gateway" width="440" height="110">
+      <img class="logo" src="assets/logo-full-light-800.png" alt="Palimpsest Gateway" width="440" height="81" fetchpriority="high">
       <p class="kicker">Self-hosted · OpenAI-compatible</p>
       <h1>One endpoint in front of <em>all your LLM keys.</em></h1>
-      <p class="lede">Pool OpenAI, Anthropic, Gemini and OpenRouter keys. Fail over automatically. Keep every conversation going across the switch.</p>
+      <p class="lede">Pool OpenAI, Anthropic, Gemini, OpenRouter, Mistral, Groq, Z.ai, GitHub Models and any OpenAI-compatible key. Let it pick the best model. Fail over automatically. Keep every conversation going across the switch.</p>
       <div class="actions">
         <a class="btn primary" href="#quickstart">Run it locally</a>
         <a class="btn" href="https://github.com/hammrouni/palimpsest-gateway" target="_blank" rel="noopener">★ Star on GitHub</a>
@@ -204,13 +204,13 @@
         <div class="arrow" aria-hidden="true">→</div>
         <div class="node core"><h3>Palimpsest Gateway</h3><p>Admit, load history, pick a key, fail over, meter usage.</p></div>
         <div class="arrow" aria-hidden="true">→</div>
-        <div class="node"><h3>Providers</h3><p>OpenAI, Anthropic, Google Gemini, OpenRouter.</p></div>
+        <div class="node"><h3>Providers</h3><p>OpenAI, Anthropic, Google Gemini, OpenRouter, Mistral, Groq, Z.ai, GitHub Models and custom endpoints.</p></div>
       </div>
       <ol class="steps">
         <li><b>Authenticate.</b> The app sends its own gateway key, never a provider key.</li>
         <li><b>Admit.</b> Daily cap and remaining pool capacity are checked.</li>
         <li><b>Load context.</b> With <code>X-Session-ID</code>, stored history is added for you.</li>
-        <li><b>Choose a key.</b> Only active keys that serve the model and aren't resting.</li>
+        <li><b>Choose a model and a key.</b> Ask for <code>palimpsest/supermode</code> and the gateway picks the best model that can serve; then only active keys that serve it and aren't resting.</li>
         <li><b>Fail over.</b> Rate limit, outage or bad key: retry on the next key, same call.</li>
         <li><b>Answer and record.</b> Reply in OpenAI format, turn saved, usage counted once.</li>
       </ol>
@@ -226,11 +226,14 @@
       <dl class="feature-list">
         <div><dt>Drop-in OpenAI API</dt><dd><code>/v1/chat/completions</code> with streaming and tool calls, plus <code>/v1/models</code>.</dd></div>
         <div><dt>Multi-provider pool</dt><dd>Keys with optional request cap, token budget, reset schedule and label.</dd></div>
+        <div><dt>Supermode</dt><dd>Ask for <code>palimpsest/supermode</code> and the gateway picks the best model your pool can serve right now, across every provider and key, and moves to the next best if it fails.</dd></div>
+        <div><dt>Learns from traffic</dt><dd>Context sizes, vision and tool support, model reliability and per-key rate limits are learned from what succeeds and what is refused, so the next request avoids what blocked this one.</dd></div>
+        <div><dt>Live Flow</dt><dd>Watch each request travel from a client through the gateway to a provider and model and back, with a history of every call and which key served which model.</dd></div>
         <div><dt>Automatic failover</dt><dd>Rate limits, outages and exhausted quotas are retried within a fixed budget. 503 with a retry hint when nothing is left.</dd></div>
         <div><dt>Conversation memory</dt><dd>Per-user session history, so clients send only the new message and context survives a switch.</dd></div>
         <div><dt>Fairness controls</dt><dd>Per-user daily caps and a pool low-water mark that throttles before the pool runs dry.</dd></div>
         <div><dt>Keys stay private</dt><dd>Encrypted at rest, never returned after creation. Users only see generic errors and stable codes.</dd></div>
-        <div><dt>Operator dashboard</dt><dd>Key health, usage, failovers, users, sessions, latency, costs, alerts and audit trail.</dd></div>
+        <div><dt>Operator dashboard</dt><dd>Key health and tests, usage, failovers, users, sessions, latency, costs, alerts and audit trail.</dd></div>
         <div><dt>Costs from your prices</dt><dd>You enter per-model prices and a monthly budget. Nothing bundled, so nothing goes stale.</dd></div>
         <div><dt>Alerts and exports</dt><dd>Low capacity, key problems, error rate, optional webhook. CSV export for usage, requests and audit.</dd></div>
         <div><dt>Observable</dt><dd>One structured JSON log line per request and a Prometheus metrics endpoint.</dd></div>

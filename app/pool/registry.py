@@ -19,6 +19,7 @@ from app.config import get_settings
 from app.core.ids import new_id
 from app.pool.limits import clear_observed
 from app.pool.models import (
+    BASE_URL_PROVIDERS,
     KeyCreate,
     KeyRecord,
     KeyState,
@@ -55,6 +56,11 @@ def _digest_key(key_digest: str) -> str:
 
 def _state_key(key_id: str) -> str:
     return f"pgw:pool:state:{key_id}"
+
+
+# SCAN walks the whole keyspace; a large COUNT keeps the round trips few. Only
+# key edits and removals scan, never the request path or the dashboard views.
+_SCAN_COUNT = 1000
 
 
 def _model_state_key(key_id: str, model: str) -> str:
@@ -122,7 +128,15 @@ class KeyNotFoundError(Exception):
 
 
 class DuplicateKeyError(Exception):
-    """Raised on add when the same key material is already in the pool."""
+    """Raised on add when the same key material is already in the pool.
+
+    ``existing`` is the record already holding it (None if it vanished meanwhile),
+    so the caller can tell the operator where to find it.
+    """
+
+    def __init__(self, digest: str, existing: KeyRecord | None = None):
+        self.existing = existing
+        super().__init__(digest)
 
 
 def _require_valid_id(key_id: str) -> None:
@@ -157,7 +171,9 @@ class PoolRegistry:
 
         claimed = await self.redis.set(_digest_key(digest), key_id, nx=True)
         if not claimed:
-            raise DuplicateKeyError(digest)
+            holder = await self.redis.get(_digest_key(digest))
+            holder = holder.decode() if isinstance(holder, bytes) else holder
+            raise DuplicateKeyError(digest, await self.get(holder) if holder else None)
 
         record = {
             "id": key_id,
@@ -172,6 +188,7 @@ class PoolRegistry:
             "daily_cap": "" if data.daily_cap is None else str(data.daily_cap),
             "token_cap": "" if data.token_cap is None else str(data.token_cap),
             "label": data.label or "",
+            "base_url": data.base_url or "",
             "operator_id": operator_id or "",
             "last_modified_by": operator_id or "",
             "created_at": now.isoformat(),
@@ -254,6 +271,17 @@ class PoolRegistry:
             mapping["daily_cap"] = "" if data.daily_cap is None else str(data.daily_cap)
         if "label" in data.model_fields_set:
             mapping["label"] = data.label or ""
+        if "base_url" in data.model_fields_set:
+            provider = Provider(record["provider"])
+            if provider not in BASE_URL_PROVIDERS:
+                raise ValueError(f"{provider.value} keys do not take a base_url")
+            if (
+                data.base_url is None
+                and provider == Provider.CUSTOM
+                and not get_settings().custom_base_url
+            ):
+                raise ValueError("a custom provider needs a base_url")
+            mapping["base_url"] = data.base_url or ""
         if "reset_at" in data.model_fields_set:
             mapping["reset_at"] = _as_aware_utc(data.reset_at).isoformat()
         if "reset_period_hours" in data.model_fields_set:
@@ -328,10 +356,10 @@ class PoolRegistry:
             pipe.delete(_digest_key(digest))
         pipe.delete(_state_key(key_id))
         await pipe.execute()
-        async for marker in self.redis.scan_iter(match=_state_key(key_id) + ":model:*"):
+        async for marker in self.redis.scan_iter(match=_state_key(key_id) + ":model:*", count=_SCAN_COUNT):
             await self.redis.delete(marker)
         await clear_observed(self.redis, key_id)
-        async for counter in self.redis.scan_iter(match=counter_pattern(key_id)):
+        async for counter in self.redis.scan_iter(match=counter_pattern(key_id), count=_SCAN_COUNT):
             await self.redis.delete(counter)
 
     # -- Reads used by selection, failover and operator views ---------------
@@ -351,12 +379,15 @@ class PoolRegistry:
                 union.setdefault(r.provider, set()).update(r.models)
         return {r.id: frozenset(union.get(r.provider, ()) | set(r.models)) for r in records}
 
-    async def routable_keys(self, model: str | None = None) -> list[KeyRecord]:
+    async def routable_keys(
+        self, model: str | None = None, records: list[KeyRecord] | None = None
+    ) -> list[KeyRecord]:
         """Active keys, optionally only those serving ``model``.
 
-        With a ``model``, keys cooling down for that model are left out.
+        With a ``model``, keys cooling down for that model are left out. ``records``
+        is a key list the caller has just read, to save reading it again.
         """
-        keys = await self.list()
+        keys = records if records is not None else await self.list()
         serving = self.serving_models(keys)
         candidates = [
             k
@@ -381,15 +412,19 @@ class PoolRegistry:
         best: datetime | None = None
         records = await self.list()
         serving = self.serving_models(records)
-        for record in records:
-            if model not in serving[record.id] or record.state == KeyState.SUSPENDED:
-                continue
-            marker = (
-                _state_key(record.id)
-                if record.state in (KeyState.EXHAUSTED, KeyState.COOLDOWN)
-                else _model_state_key(record.id, model)
-            )
-            ttl = await self.redis.ttl(marker)
+        markers = [
+            _state_key(record.id)
+            if record.state in (KeyState.EXHAUSTED, KeyState.COOLDOWN)
+            else _model_state_key(record.id, model)
+            for record in records
+            if model in serving[record.id] and record.state != KeyState.SUSPENDED
+        ]
+        if not markers:
+            return None
+        pipe = self.redis.pipeline(transaction=False)
+        for marker in markers:
+            pipe.ttl(marker)
+        for ttl in await pipe.execute():
             if ttl is None or ttl <= 0:
                 continue
             until = now + timedelta(seconds=ttl)
@@ -400,34 +435,10 @@ class PoolRegistry:
     async def _forget_model_pauses(self, key_id: str, keep: set[str] | frozenset[str]) -> None:
         """Delete the per-model pauses of models a key no longer serves."""
         prefix = _state_key(key_id) + ":model:"
-        async for raw in self.redis.scan_iter(match=prefix + "*"):
+        async for raw in self.redis.scan_iter(match=prefix + "*", count=_SCAN_COUNT):
             name = raw.decode() if isinstance(raw, bytes) else raw
             if name[len(prefix):] not in keep:
                 await self.redis.delete(name)
-
-    async def _cooling_models(
-        self, key_id: str, serving: frozenset[str] | None = None
-    ) -> list[dict]:
-        """Models paused on a key. With ``serving``, models it no longer serves are left out."""
-        prefix = _state_key(key_id) + ":model:"
-        cooling = []
-        async for raw in self.redis.scan_iter(match=prefix + "*"):
-            name = raw.decode() if isinstance(raw, bytes) else raw
-            if serving is not None and name[len(prefix):] not in serving:
-                continue
-            ttl = await self.redis.ttl(name)
-            if ttl is not None and ttl > 0:
-                reason = await self.redis.hget(name, "reason")
-                if isinstance(reason, bytes):
-                    reason = reason.decode()
-                cooling.append(
-                    {
-                        "model": name[len(prefix):],
-                        "seconds_remaining": float(ttl),
-                        "reason": reason or None,
-                    }
-                )
-        return sorted(cooling, key=lambda item: item["model"])
 
     async def effective_state(self, key_id: str) -> KeyState:
         """The key's effective state; raises ``KeyNotFoundError`` if absent."""
@@ -482,19 +493,52 @@ class PoolRegistry:
         )
 
     async def list_states(self) -> list[KeyStateView]:
-        """All keys + effective state + reset_at + time-remaining-on-marker."""
-        views = []
+        """All keys + effective state + reset_at + time-remaining-on-marker.
+
+        One pipelined batch for every key. The per-model markers are read by
+        name from the models each key serves, never found by scanning the
+        keyspace: a SCAN walks every key Redis holds (sessions, usage, ...), so
+        doing one per pool key made this view grow with all stored data.
+        """
         records = await self.list()
+        if not records:
+            return []
         serving = self.serving_models(records)
+
+        pipe = self.redis.pipeline(transaction=False)
+        plan: list[tuple[KeyRecord, bool, list[str]]] = []
         for record in records:
+            paused = record.state in (KeyState.EXHAUSTED, KeyState.COOLDOWN)
+            if paused:
+                pipe.ttl(_state_key(record.id))
+                pipe.hget(_state_key(record.id), "reason")
+            models = sorted(serving[record.id])
+            for model in models:
+                pipe.ttl(_model_state_key(record.id, model))
+                pipe.hget(_model_state_key(record.id, model), "reason")
+            plan.append((record, paused, models))
+        replies = iter(await pipe.execute())
+
+        def text(value: Any) -> str | None:
+            value = value.decode() if isinstance(value, bytes) else value
+            return value or None
+
+        views = []
+        for record, paused, models in plan:
             seconds_remaining = None
             reason = None
-            if record.state in (KeyState.EXHAUSTED, KeyState.COOLDOWN):
-                ttl = await self.redis.ttl(_state_key(record.id))
+            if paused:
+                ttl, raw_reason = next(replies), next(replies)
                 if ttl is not None and ttl >= 0:
                     seconds_remaining = float(ttl)
-                raw_reason = await self.redis.hget(_state_key(record.id), "reason")
-                reason = raw_reason.decode() if isinstance(raw_reason, bytes) else raw_reason
+                reason = text(raw_reason)
+            cooling = []
+            for model in models:
+                ttl, raw_reason = next(replies), next(replies)
+                if ttl is not None and ttl > 0:
+                    cooling.append(
+                        {"model": model, "seconds_remaining": float(ttl), "reason": text(raw_reason)}
+                    )
             views.append(
                 KeyStateView(
                     id=record.id,
@@ -503,8 +547,8 @@ class PoolRegistry:
                     state=record.state,
                     reset_at=record.reset_at,
                     seconds_remaining=seconds_remaining,
-                    reason=reason or None,
-                    cooling_models=await self._cooling_models(record.id, serving[record.id]),
+                    reason=reason,
+                    cooling_models=cooling,
                 )
             )
         return views
@@ -598,6 +642,7 @@ class PoolRegistry:
             daily_cap=float(daily_cap) if daily_cap else None,
             token_cap=int(decoded["token_cap"]) if decoded.get("token_cap") else None,
             label=decoded.get("label") or None,
+            base_url=decoded.get("base_url") or None,
             state=state,
             operator_id=decoded.get("operator_id") or None,
             last_modified_by=decoded.get("last_modified_by") or None,

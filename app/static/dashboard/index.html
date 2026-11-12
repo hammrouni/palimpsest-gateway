@@ -9,7 +9,9 @@
 <link rel="icon" href="icons/icon-16.png" type="image/png" sizes="16x16">
 <link rel="apple-touch-icon" href="icons/apple-touch-icon.png">
 <link rel="manifest" href="icons/site.webmanifest">
-<meta name="theme-color" content="#182b32">
+<meta name="theme-color" content="#f3f6f9" media="(prefers-color-scheme: light)">
+<meta name="theme-color" content="#0d1317" media="(prefers-color-scheme: dark)">
+<script src="theme.js"></script>
 <link rel="stylesheet" href="styles.css">
 </head>
 <body>
@@ -38,7 +40,12 @@
 
 <div id="app" class="app" hidden>
   <header class="topbar">
-    <span class="brand"><img src="icons/icon-64.png" alt="" width="28" height="28">Palimpsest Gateway</span>
+    <span class="brand"><img src="icons/icon-64.png" alt="" width="28" height="28"><span class="brand-name">Palimpsest Gateway</span></span>
+    <button type="button" id="nav-toggle" class="nav-toggle" aria-controls="nav" aria-expanded="false">
+      <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" aria-hidden="true"><path d="M4 7h16M4 12h16M4 17h16"/></svg>
+      <span id="nav-toggle-label">Menu</span>
+    </button>
+    <button type="button" id="theme-toggle" class="icon-button theme-toggle" aria-label="Switch to dark mode" title="Switch to dark mode"></button>
     <button type="button" id="logout" class="ghost">Sign out</button>
   </header>
   <div class="shell">
@@ -51,6 +58,9 @@
 
 <noscript><p class="noscript">The operator dashboard needs JavaScript enabled.</p></noscript>
 <script src="insights.js" defer></script>
+<script src="supermode.js" defer></script>
+<script src="live.js" defer></script>
+<script src="livehistory.js" defer></script>
 <script src="app.js" defer></script>
 </body>
 </html>

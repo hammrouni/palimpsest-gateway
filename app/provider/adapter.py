@@ -24,7 +24,7 @@ from litellm.exceptions import (
 
 from app.config import get_settings
 from app.pool.limits import record_observed
-from app.pool.models import Provider
+from app.pool.models import BASE_URL_PROVIDERS, DEFAULT_BASE_URLS, Provider
 from app.pool.registry import KeyNotFoundError, PoolRegistry
 
 litellm.verbose = False
@@ -41,6 +41,9 @@ _MODEL_PREFIX: dict[Provider, str] = {
     Provider.OPENROUTER: "openrouter",
     Provider.MISTRAL: "mistral",
     Provider.GROQ: "groq",
+    Provider.ZAI: "zai",
+    Provider.XAI: "xai",
+    Provider.GITHUB: "github",
     Provider.CUSTOM: "openai",  # custom OpenAI-compatible endpoints use openai prefix
 }
 
@@ -93,16 +96,33 @@ def _mapped_model(provider: Provider, model: str) -> str:
     return f"{_MODEL_PREFIX[provider]}/{model}"
 
 
-def _api_base(provider: Provider) -> str | None:
+# Parameters that change what the reply is: never dropped silently.
+_TOOL_PARAMS = frozenset({"tools", "tool_choice", "parallel_tool_calls"})
+
+# Providers whose API takes ``max_completion_tokens`` as sent.
+_MAX_COMPLETION_TOKENS_PROVIDERS = frozenset({Provider.OPENAI, Provider.OPENROUTER, Provider.GITHUB})
+
+
+def _api_base(provider: Provider, key_base_url: str | None = None) -> str | None:
+    """Where this attempt goes: the key's own base URL, else the provider's setting/default."""
     settings = get_settings()
     if provider == Provider.OPENROUTER:
         return settings.openrouter_base_url
+    if provider in BASE_URL_PROVIDERS and key_base_url:
+        return key_base_url
     if provider == Provider.OPENAI:
         return settings.openai_base_url or None
     if provider == Provider.MISTRAL:
         return settings.mistral_base_url or None
     if provider == Provider.GROQ:
         return settings.groq_base_url or None
+    if provider == Provider.ZAI:
+        return settings.zai_base_url or None  # litellm's own default is the Z.ai API
+    if provider == Provider.XAI:
+        return settings.xai_base_url or None  # litellm's own default is the xAI API
+    if provider == Provider.GITHUB:
+        # litellm still defaults to GitHub's retired Azure endpoint.
+        return settings.github_base_url or DEFAULT_BASE_URLS[Provider.GITHUB]
     if provider == Provider.CUSTOM:
         return settings.custom_base_url or None
     return None
@@ -163,7 +183,7 @@ async def _attempt_once(
 
     provider = record.provider
     mapped_model = _mapped_model(provider, model)
-    api_base = _api_base(provider)
+    api_base = _api_base(provider, record.base_url)
 
     filtered_params = {
         k: v for k, v in params.items() if k in _LITELLM_PARAM_WHITELIST
@@ -175,6 +195,13 @@ async def _attempt_once(
     unknown = set(params) - _LITELLM_PARAM_WHITELIST
     if unknown:
         logger.debug("dropping unrecognized litellm params: %s", unknown)
+
+    # max_completion_tokens is OpenAI's newer name; most other APIs (Z.ai, Groq,
+    # Mistral, ...) only know max_tokens and litellm refuses the request before
+    # sending it. Send the limit under the name the provider takes.
+    if provider not in _MAX_COMPLETION_TOKENS_PROVIDERS and "max_completion_tokens" in filtered_params:
+        limit = filtered_params.pop("max_completion_tokens")
+        filtered_params.setdefault("max_tokens", limit)
 
     # Gemini 3+ warns that temperature, top_p and top_k are being removed. Drop them
     # for every gemini- model here, not only 3+, so the request stays uniform.
@@ -199,6 +226,11 @@ async def _attempt_once(
             messages=messages,
             # litellm's own default is 6000s, holding the session lock throughout.
             timeout=timeout,
+            # A tuning param this provider does not take (a seed, a penalty) is dropped,
+            # not a 400: the client sent a valid OpenAI request. With tools it is not:
+            # a reply without the tool call is not what was asked, so the provider
+            # refuses and the gateway can move on to a model that supports them.
+            drop_params=not (_TOOL_PARAMS & filtered_params.keys()),
             **filtered_params,
         )
         hidden = getattr(response, "_hidden_params", None) or {}

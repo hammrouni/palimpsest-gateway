@@ -21,6 +21,7 @@ from app.pool.events import recent_failover_events
 from app.pool.limit_sync import sync_all, sync_key
 from app.pool.limits import LiveLimitsError, get_observed, live_limits
 from app.pool.models import KeyCreate, KeyUpdate, Provider
+from app.pool.probe import probe_key, probe_models
 from app.pool.registry import DuplicateKeyError, KeyNotFoundError, PoolRegistry
 from app.settlement import utilization_view
 
@@ -93,6 +94,23 @@ def _invalid_request(param: str | None = None) -> GatewayError:
     )
 
 
+def _duplicate_message(existing: Any) -> str:
+    """Where the key being added already is, so it can be found and edited instead.
+
+    Names the entry by its label or provider and hint (never the key itself) and
+    its endpoint when it has one: a key added under another provider is the usual
+    reason it seems missing.
+    """
+    if existing is None:
+        return "A key with this material already exists."
+    name = f"'{existing.label}'" if existing.label else f"{existing.provider.value} key {existing.key_hint}"
+    where = f", {existing.base_url}" if existing.base_url else ""
+    return (
+        f"This key is already in the pool as {name} (provider {existing.provider.value}{where}). "
+        "Edit or remove that entry instead of adding it again."
+    )
+
+
 def _key_not_found() -> GatewayError:
     return GatewayError(
         message="Key not found.",
@@ -115,6 +133,7 @@ def _key_record_body(record: Any) -> dict:
         "daily_cap": record.daily_cap,
         "token_cap": record.token_cap,
         "label": record.label,
+        "base_url": record.base_url,
         "state": record.state.value,
         "operator_id": record.operator_id,
         "last_modified_by": record.last_modified_by,
@@ -134,7 +153,7 @@ async def add_key(
         record = await _pool_call(registry.create, body, operator_id=operator["id"])
     except DuplicateKeyError as exc:
         raise GatewayError(
-            message="A key with this material already exists.",
+            message=_duplicate_message(exc.existing),
             status_code=409,
             error_type="invalid_request_error",
             code="duplicate_key",
@@ -188,6 +207,15 @@ async def update_key(
         record = await _pool_call(registry.update, key_id, body, operator_id=operator["id"])
     except KeyNotFoundError as exc:
         raise _key_not_found() from exc
+    except ValueError as exc:
+        # A base_url this provider cannot take, or one a custom key cannot lose.
+        raise GatewayError(
+            message=str(exc),
+            status_code=422,
+            error_type="invalid_request_error",
+            code="invalid_request",
+            param="base_url",
+        ) from exc
     await audit(registry.redis, operator["id"], "pool_key.update", key_id,
                 {"fields": sorted(body.model_dump(exclude_unset=True))})
     return _key_record_body(record)
@@ -221,6 +249,72 @@ async def resume_key(
         raise _key_not_found() from exc
     await audit(registry.redis, operator["id"], "pool_key.resume", key_id)
     return _key_record_body(record)
+
+
+class KeyTestRequest(BaseModel):
+    """Which of the key's models to test; the first one when omitted."""
+
+    model: str | None = Field(default=None, max_length=200)
+
+
+@router.post("/{key_id}/test", responses=_ERROR_RESPONSES)
+async def test_key(
+    key_id: Annotated[str, Path()],
+    registry: Annotated[PoolRegistry, Depends(get_pool_registry)],
+    operator: Annotated[dict, Depends(get_current_operator)],
+    body: KeyTestRequest | None = None,
+) -> dict:
+    """Send one tiny request through this key and say whether it answered.
+
+    A provider failure is a normal ``200`` result with ``ok: false`` and a
+    ``verdict``. Nothing is metered and no key or model state changes. The cost
+    is one request of a few tokens at the provider.
+    """
+    try:
+        result = await _pool_call(probe_key, registry, key_id, body.model if body else None)
+    except KeyNotFoundError as exc:
+        raise _key_not_found() from exc
+    except ValueError as exc:
+        raise GatewayError(
+            message=str(exc),
+            status_code=422,
+            error_type="invalid_request_error",
+            code="invalid_request",
+            param="model",
+        ) from exc
+    await audit(registry.redis, operator["id"], "pool_key.test", key_id,
+                {"model": result["model"], "ok": result["ok"], "verdict": result["verdict"]})
+    return result
+
+
+@router.post("/{key_id}/test-models", responses=_ERROR_RESPONSES)
+async def test_key_models(
+    key_id: Annotated[str, Path()],
+    registry: Annotated[PoolRegistry, Depends(get_pool_registry)],
+    operator: Annotated[dict, Depends(get_current_operator)],
+) -> dict:
+    """Test every model of this key, a few at a time, and list which ones work.
+
+    A provider's model list says what exists, not what this account may call: some
+    models need a paid balance or a plan. Each model costs one tiny request (a
+    refused one costs nothing). Same guarantees as the single test: no usage is
+    counted and no key or model state changes. At most 30 models per run.
+    """
+    try:
+        result = await _pool_call(probe_models, registry, key_id)
+    except KeyNotFoundError as exc:
+        raise _key_not_found() from exc
+    except ValueError as exc:
+        raise GatewayError(
+            message=str(exc),
+            status_code=422,
+            error_type="invalid_request_error",
+            code="invalid_request",
+            param="models",
+        ) from exc
+    await audit(registry.redis, operator["id"], "pool_key.test_models", key_id,
+                {"working": len(result["working"]), "failing": len(result["failing"])})
+    return result
 
 
 @router.get("/{key_id}/provider-limits", responses=_ERROR_RESPONSES)
@@ -343,6 +437,8 @@ class AvailableModelsRequest(BaseModel):
 
     provider: Provider
     key: str = Field(min_length=1, max_length=4096)
+    # List from this endpoint instead of the provider's own (OpenAI-compatible providers).
+    base_url: str | None = Field(default=None, max_length=300)
 
 
 @ops_router.post("/available-models")
@@ -352,7 +448,7 @@ async def post_available_models(
 ) -> dict:
     """List a provider's models using a key that is not in the pool yet (the add-key form)."""
     try:
-        models = await fetch_models(body.provider, body.key.strip())
+        models = await fetch_models(body.provider, body.key.strip(), body.base_url)
     except CatalogError as exc:
         raise _catalog_error(exc) from exc
     return {"object": "list", "data": models}

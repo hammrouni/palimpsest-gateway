@@ -30,6 +30,7 @@ TUNABLE_FIELDS: tuple[str, ...] = (
     "user_daily_cap",
     "request_log_prompts",
     "cooldown_seconds",
+    "failover_max_wait_seconds",
     "failover_event_log_size",
     "request_log_ttl_hours",
     "share_models_by_provider",
@@ -109,8 +110,44 @@ class Settings(BaseSettings):
     # model a provider serves goes to that provider's master. ``master_model`` wins.
     provider_master_models: dict[str, str] = Field(default_factory=dict)
 
+    # Supermode (``palimpsest/supermode``): quality scores that replace the
+    # built-in ones, by exact model id ({"my-finetune": 90}).
+    supermode_quality: dict[str, int] = Field(default_factory=dict)
+
+    # Supermode: what the gateway should believe about a model, by exact model id:
+    # ({"my-model": {"context": 128000, "vision": true, "tools": true}}). Replaces the
+    # built-in table for the fields given; ``context`` and ``tools`` may be null (unknown).
+    supermode_profiles: dict[str, dict[str, int | bool | None]] = Field(default_factory=dict)
+
+    @field_validator("supermode_profiles")
+    @classmethod
+    def _check_supermode_profiles(
+        cls, value: dict[str, dict[str, int | bool | None]]
+    ) -> dict[str, dict[str, int | bool | None]]:
+        """Only the three known fields, each of a sensible type."""
+        for model, fields in value.items():
+            unknown = set(fields) - {"context", "vision", "tools"}
+            if unknown:
+                raise ValueError(f"{model}: unknown field {', '.join(sorted(unknown))}")
+            context = fields.get("context")
+            if context is not None and (isinstance(context, bool) or context < 1):
+                raise ValueError(f"{model}: context must be a positive number of tokens or null")
+            if "vision" in fields and not isinstance(fields["vision"], bool):
+                raise ValueError(f"{model}: vision must be true or false")
+            if fields.get("tools") is not None and not isinstance(fields["tools"], bool):
+                raise ValueError(f"{model}: tools must be true, false or null")
+        return value
+
+    # Supermode: other models tried, best first, when every key of the chosen
+    # model is exhausted. 0 = no model fallback.
+    supermode_fallback_models: int = Field(default=2, ge=0, le=10)
+
     # Default pause after a transient provider failure, when the provider gives none.
     cooldown_seconds: int = Field(default=60, ge=1)
+
+    # When every key for a model is paused but one comes back within this many
+    # seconds, the request waits for it instead of returning 429. 0 = off.
+    failover_max_wait_seconds: int = Field(default=0, ge=0, le=30)
 
     # Retries after the first attempt: at most retry_budget + 1 provider calls.
     # 0 (no failover) is env-only; the runtime PATCH requires >= 1.
@@ -137,6 +174,10 @@ class Settings(BaseSettings):
     openai_base_url: str | None = None
     mistral_base_url: str | None = None
     groq_base_url: str | None = None
+    zai_base_url: str | None = None
+    xai_base_url: str | None = None
+    github_base_url: str | None = None
+    # Default endpoint for ``custom`` keys that do not set their own base URL.
     custom_base_url: str | None = None
 
     @property
@@ -219,6 +260,7 @@ class ConfigPatch(BaseModel):
     user_daily_cap: int | None = Field(default=None, ge=1)
     request_log_prompts: bool | None = None
     cooldown_seconds: int | None = Field(default=None, ge=1)
+    failover_max_wait_seconds: int | None = Field(default=None, ge=0, le=30)
     failover_event_log_size: int | None = Field(default=None, ge=1, le=1_000_000)
     request_log_ttl_hours: int | None = Field(default=None, ge=1, le=8760)
     share_models_by_provider: bool | None = None

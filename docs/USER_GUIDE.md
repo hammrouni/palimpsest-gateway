@@ -151,7 +151,10 @@ The bootstrap key is only seeded while no *active* operator key exists. It is a 
 | `PALIMPSEST_OPENAI_BASE_URL` | *(none)* | Override for the OpenAI adapter base URL. |
 | `PALIMPSEST_MISTRAL_BASE_URL` | *(none)* | Override for the Mistral adapter base URL. |
 | `PALIMPSEST_GROQ_BASE_URL` | *(none)* | Override for the Groq adapter base URL. |
-| `PALIMPSEST_CUSTOM_BASE_URL` | *(none)* | Base URL of the `custom` provider, any OpenAI-compatible endpoint. Required to use it. |
+| `PALIMPSEST_ZAI_BASE_URL` | *(none)* | Override for the Z.ai adapter base URL (default `https://api.z.ai/api/paas/v4`). |
+| `PALIMPSEST_XAI_BASE_URL` | *(none)* | Override for the xAI adapter base URL (default `https://api.x.ai/v1`). |
+| `PALIMPSEST_GITHUB_BASE_URL` | *(none)* | Override for the GitHub Models adapter base URL (default `https://models.github.ai/inference`). |
+| `PALIMPSEST_CUSTOM_BASE_URL` | *(none)* | Default endpoint for `custom` keys that set no `base_url` of their own. Not needed when every custom key sets one. |
 
 ### Store and HTTP
 
@@ -179,8 +182,12 @@ The bootstrap key is only seeded while no *active* operator key exists. It is a 
 
 | Variable | Default | Description |
 | :--- | :--- | :--- |
-| `PALIMPSEST_RETRY_BUDGET` | `3` | Retries after the first attempt, so a request makes at most `RETRY_BUDGET + 1` provider calls. `0` disables failover (env only; the runtime API accepts 1–20). Spending it returns `budget_exhausted`. |
+| `PALIMPSEST_RETRY_BUDGET` | `3` | Retries after the first attempt, so a request makes at most `RETRY_BUDGET + 1` provider calls. `0` disables failover (env only; the runtime API accepts 1–20). Spending it returns `budget_exhausted`: a `429` when every try was a rate or quota limit, otherwise a `503`. |
 | `PALIMPSEST_COOLDOWN_SECONDS` | `60` | How long a key rests after a transient provider failure. Minimum 1. |
+| `PALIMPSEST_FAILOVER_MAX_WAIT_SECONDS` | `0` | When every key for the model is paused but one comes back within this many seconds, the request waits for it instead of answering `429`. `0` turns it off; at most 30. The wait holds the session lock, so keep it short. |
+| `PALIMPSEST_SUPERMODE_PROFILES` | `{}` | JSON object of model id to what the gateway should believe about it, for [supermode](#supermode): `{"my-model": {"context": 128000, "vision": true, "tools": true}}`. Each field replaces the built-in value; `context` and `tools` may be `null` (unknown, never filtered on). An unknown field or a bad value is refused at startup. |
+| `PALIMPSEST_SUPERMODE_QUALITY` | `{}` | JSON object of model id to quality score (0–100) for [supermode](#supermode). Replaces the built-in score of that exact model, or scores a model the built-in table does not know. |
+| `PALIMPSEST_SUPERMODE_FALLBACK_MODELS` | `2` | How many other models supermode tries, best first, when every key of its chosen model is spent. `0` turns model fallback off; at most 10. |
 
 ### Settlement, fairness and pool visibility
 
@@ -204,6 +211,7 @@ The settings marked *tunable* below can be changed without a restart, via `PATCH
 | `user_daily_cap` | ≥ 1, or `null` to clear the cap |
 | `request_log_prompts` | boolean |
 | `cooldown_seconds` | ≥ 1 |
+| `failover_max_wait_seconds` | 0–30 |
 | `failover_event_log_size` | 1–1000000 |
 | `request_log_ttl_hours` | 1–8760 |
 | `share_models_by_provider` | boolean; see [Model sharing and master models](#model-sharing-and-master-models) |
@@ -256,7 +264,13 @@ curl -X POST http://localhost:8000/v1/operator/pool/keys \
       }'
 ```
 
-Supported providers are `openai`, `anthropic`, `google`, `openrouter`, `mistral`, `groq` and `custom`. `custom` is any OpenAI-compatible endpoint and needs `PALIMPSEST_CUSTOM_BASE_URL`. Adding another provider is a deliberate code change in `app/pool/models.py`.
+Supported providers are `openai`, `anthropic`, `google`, `openrouter`, `mistral`, `groq`, `zai`, `xai`, `github` and `custom`. Adding another provider is a deliberate code change in `app/pool/models.py`.
+
+**Endpoints.** `custom` is any OpenAI-compatible server (Ollama, vLLM, LM Studio, a hosted gateway): give the key its `base_url`, up to and including `/v1`, for example `"base_url": "http://localhost:11434/v1"`. The dashboard's Add key form shows a *Base URL* field for it. `openai`, `mistral`, `groq`, `zai` and `github` accept the same optional field to override their usual endpoint; `anthropic`, `google` and `openrouter` do not. A key without a `base_url` uses the provider's own endpoint (or `PALIMPSEST_CUSTOM_BASE_URL` for `custom`). It can be changed later with `PATCH`, and `null` removes it.
+
+The provider key is sent to the base URL, so it must be `http(s)://host[:port][/path]` with no credentials, query string or fragment, and not a link-local or cloud-metadata address (`169.254.x.x`, `metadata.google.internal`). Private and `localhost` addresses are allowed, for self-hosted servers.
+
+`zai` is Z.ai's GLM models; for the GLM coding plan set `"base_url": "https://api.z.ai/api/coding/paas/v4"`. `github` is GitHub Models: the key is a GitHub token with models access, and models are named `publisher/model`, for example `openai/gpt-4.1`.
 
 ### Key states
 
@@ -276,7 +290,9 @@ When a key or one of its models is held back, the gateway stores the cause with 
 | `no_credits` | The account is out of money. Waiting does not help until it is topped up. |
 | `daily_limit` | A per-day quota was reached; the key returns at the provider's reset. |
 | `rate_limit` | A brief limit; the model rests for the provider's retry hint, or `COOLDOWN_SECONDS`. |
-| `model_unavailable` | The provider does not offer the model (404, or a model-scoped 403). The model is paused for 24 hours and the key keeps serving its other models. A 404 pauses the model on every key of that provider. |
+| `model_unavailable` | The provider does not offer the model (404, or a model-scoped 403), or its quota for this model is 0 (Google's free tier for Gemini Pro: `limit: 0, model: gemini-3.1-pro`). The model is paused for 24 hours and the key keeps serving its other models. A 404 pauses the model on every key of that provider. |
+
+A 429 that names the model its quota belongs to (Google: `Quota exceeded for metric: ..., limit: N, model: ...`) pauses only that model on that key: until Google's `retryDelay` when the limit is above 0, for 24 hours when it is 0. Only a quota that names no model pauses the whole key.
 | `network` | The provider timed out. |
 | `provider_error` | A 5xx from the provider. |
 | `auth` | The key was refused; it is suspended until an operator resumes it. |
@@ -291,7 +307,7 @@ Three runtime settings change which model serves a request. Change them on the d
 - **`master_model`**. One model for the whole gateway. Every chat request is served by it, whatever model the client asked for, including a model nobody serves. The response `model` field names the master model. Choose it from the dropdown; the API refuses a model no key serves.
 - **`provider_master_models`**. One model per provider. A request for any model a provider's keys serve is sent to that provider's master. A provider with no master keeps the requested model. If a model is served by more than one provider, the first provider with a master decides. A model no key serves is left alone, because no provider can be named for it.
 
-`master_model` wins over `provider_master_models`. `GET /v1/models` still lists every served model. If no key serves the chosen master, requests fail with `503 pool_exhausted`.
+`master_model` wins over `provider_master_models`. `GET /v1/models` still lists every served model. If no key serves the chosen master, requests fail with `429 pool_exhausted`.
 
 ```bash
 curl -X PATCH http://localhost:8000/operator/v1/config \
@@ -299,6 +315,97 @@ curl -X PATCH http://localhost:8000/operator/v1/config \
   -H "Content-Type: application/json" \
   -d '{"provider_master_models": {"openrouter": "nvidia/nemotron-3-ultra-550b-a55b:free"}}'
 ```
+
+### Supermode
+
+Ask for the model `palimpsest/supermode` and the gateway picks the model for you: the best one the pool can serve right now, across every provider and key. `GET /v1/models` lists it whenever any model is served.
+
+The choice is quality first:
+
+1. Every model a non-suspended key serves is a contender.
+2. A model that cannot take this request is dropped: a context window too small for the prompt plus the reply (`max_tokens`, or 1024 when unset), no vision for a message with an image, no tool calling for a request with `tools`.
+3. The rest are ranked by quality, highest first. Equal quality goes to the model with the most capacity left: an uncapped key first, then the most remaining daily cap.
+4. A model with no key ready now (all exhausted, cooling down or capped out) is skipped.
+
+The first model serves the request. The whole request, every model it moves through included, stays within twice the provider timeout, so a chain of slow models cannot hold the session for minutes. If every key of it is spent during the request, or the model turns the request down (too long, images, tools, a parameter it does not take, an upstream "bad request"), the gateway ranks again and the best model not tried yet takes over, up to `PALIMPSEST_SUPERMODE_FALLBACK_MODELS` more. The ranking is read live, so keys this request just paused are already out: when a provider's keys run out of credits, the next model comes from a provider that still has some. The response `model` field and the `X-Palimpsest-Model` header name the model that answered.
+
+No provider is called to make the choice, so it adds no latency and spends no quota. Quality, context window and capabilities come from a built-in table matched on the model id (`app/router/supermode_profiles.py`); routing prefixes (`openai/gpt-4o`) and OpenRouter suffixes (`:free`) are ignored when matching. A model the table does not know gets a low score, so it is picked only when no known model can serve. A broad family row (a plain `llama`) leaves the context window unknown instead of guessing a small one; an unknown window is never filtered on, and the gateway learns the real one. Set `PALIMPSEST_SUPERMODE_QUALITY` to correct a score or rank your own models, and `PALIMPSEST_SUPERMODE_PROFILES` to give a model its real context window or capabilities:
+
+```bash
+PALIMPSEST_SUPERMODE_QUALITY='{"my-finetune": 92, "gpt-4o-mini": 60}'
+```
+
+#### Auto-improve
+
+Every provider answer teaches the gateway something, kept in Redis, so the next request (anyone's) avoids what blocked this one. Nothing needs turning on.
+
+| Learned | From | Effect |
+| :--- | :--- | :--- |
+| Context window | A success at N tokens proves the window holds N; a context-length refusal at N caps it below N. A later success above a refusal clears the refusal. | Supermode skips the model for prompts that would not fit, before calling anyone. |
+| Vision, tool calling | A request with images or `tools` that succeeds proves the capability; one refused for it marks the model as lacking it. | Supermode skips the model for requests that need it. |
+| Refused requests | A model turned a supermode request down and a later model served it, so the refusal was that model's. | The model loses 30 quality points for 30 minutes. A request that every model refuses blames none of them. |
+| Reliability | Successes and provider-side failures per model (rate limits, outages, missing model). Capability refusals and network faults on our side do not count. Counts are halved past 200 so old history fades. | After 5 requests, a model loses up to 20 quality points for its failure rate, and 5 more for 2 minutes after a 429. |
+| Requests per minute, per key | A 429 from a key whose provider sent no rate-limit headers: the requests that key took in the last 60 seconds, minus the refused one, become its learned limit, once it had taken at least 3 (a 429 after fewer is a daily or account limit, not a rate). The limit fades after an hour. A success past it raises it. | Keys at their learned limit over the last 60 seconds are tried last, for every model, supermode or not. They are not skipped, so a wrong guess never refuses a request. |
+
+When a supermode request is refused because the chosen model cannot take it, the refusal is learned and the next model gets the request instead of the client seeing the error. Image parts count as a flat 1500 tokens in the estimate, not their base64 length. Learned model facts expire 30 days after the model was last used.
+
+#### The Supermode page
+
+The dashboard has a **Supermode** page (Monitoring group) that shows how it works and what it did. Choose the range at the top.
+
+- **Cards:** requests, how many were answered, how often the best-ranked model did the work (*First pick answered*), how many moved to another model, average latency, requests nothing could serve, and requests that needed images or tools.
+- **How supermode works / How a model is selected:** the steps above and the parts of a score, with your live settings (the number of other models it may try, any quality overrides).
+- **What it would pick right now:** the live ranking for a request of the size and kind you choose (prompt plus reply tokens, with or without an image, with or without tools). Each model shows its score (hover for quality minus penalty), context window, image and tool support, keys ready, capacity left, and what the gateway has learned about it. A model that is left out says why: prompt too long for it, no image support, no tool support, or no key ready. The same data is at `GET /operator/v1/supermode/ranking?tokens=N&vision=true&tools=true`.
+- **Where requests go:** answered requests by model (with how often each was the first pick), by provider and by client.
+- **Why requests moved to another model:** every move counted by cause (every key spent or paused, prompt too long, no image support, no tool support, request refused).
+- **Learned request limits:** the requests-per-minute limits the gateway worked out for keys whose provider sends none.
+- **Recent supermode requests:** the last 50, with what was needed, the model first picked, each move and its cause, who answered, and the result.
+
+The statistics start when supermode is first used after this version is installed. They are kept for 90 days (daily counters) and the last 300 requests, and hold only names, counts and timings, never message content. `GET /operator/v1/supermode?days=N` returns them. A request to a real model name is not counted. With a master model set the page says supermode is bypassed.
+
+`master_model` still wins: with it set, supermode requests go to the master like any other. The pick is made per request, so two turns of one session can be answered by different models when capacity changes between them.
+
+### Live Flow
+
+The **Live Flow** page (Monitoring group) shows requests as they happen, like signals on a wire: a request leaves a client, enters the gateway, is sent to a provider and model, and the answer comes back.
+
+- **The diagram:** clients on the left (named as on the Users page), the gateway in the middle, the providers of your pool on the right, each with the models it served lately. Every request is **one dot** that makes the whole trip:
+  1. **blue**: leaves the client and enters the gateway;
+  2. **cyan**: goes on to a provider and model, and **pulses** while it waits for the answer;
+  3. **green**: the answer comes back to the gateway (it pulses there while a streamed reply is still running), then the dot returns to the client and disappears;
+  4. **red**: the provider refused or failed. If the gateway tries another model or key, the dot turns cyan again and goes to that provider.
+
+  A wire **glows and moves** while a request is on it, and the client and provider nodes light up. The gateway shows how the last request was routed (`supermode → model`, or the model asked for). If the page falls behind or the browser stops drawing frames, dots catch up by jumping instead of replaying old moves. **Slow motion** makes the dots about 2.5 times slower to follow them. With reduced motion set in the browser, dots jump instead of travelling and the wires stay still.
+- **What is happening now:** the last six steps, written as plain sentences, for example "The gateway sends it to Google, model gemini-3.1-flash-lite, with key Google1".
+- **In flight:** the requests being served now, what each is waiting for (the gateway, a provider and model, a retry) and how long each has been open. A streamed request stays open until the client has read the whole reply.
+- **Cards:** requests in flight, requests started in the last minute, the share answered and the average time of the last 50 finished requests.
+- **Buttons:** **Slow motion** makes the dots about 2.5 times slower. **Pause** freezes the screen: steps keep being recorded and the data keeps up behind it, and **Resume** shows what piled up at once, without replaying it. If the page was not polling for 15 seconds or more (a hidden tab), the call history is loaded again when it comes back. **Reload history** loads the call history and the key list again.
+
+#### History
+
+Under the diagram, three tabs hold the history. Every table has filters and pages (10 to 100 rows) and the filters you set stay while the page is open.
+
+- **Calls:** one row per request, newest first, with the time, the client, what it asked for (with a badge when supermode or a master model routed it, and how many times it moved to another model), **every provider, key and model it was sent to** in order with ✓ or ✗, the status and time of each try, the result, the total time, the first-chunk time and the tokens in and out. Filter by words (request id, model, key, client), result (answered, failed, running now, retried or moved on), client and provider. **Details** opens the request: its fields and a timeline of its steps, with how long each try took.
+- **Steps:** the individual steps (request in, sent out, answer or refusal, moves on, response) of the requests seen while the page is open, the last 500. Filter by step and by words. A request id opens the call.
+- **Keys by model:** one group per model, and in it every key that can serve that model with the key's state now (available, paused, out of quota, suspended), how many calls it took, how many were answered and failed, its success rate, the average answer time, how many are in flight, when it was last used and how the last try went. A key that can serve a model but has not been asked shows zero calls. Filter by model or key, by provider, and to the keys that were used.
+
+The call history is **kept by the gateway for every request, whether or not this page is open**, as a list of the newest `PALIMPSEST_USAGE_RECENT_MAX` calls (500 by default, the same limit as the Requests page), so the page shows what happened before you opened it. `GET /operator/v1/calls?limit=N&account_id=…` returns it, up to 1000 calls. A failed or refused request is in it too, with an empty list of tries when no provider was reached.
+
+The diagram and the **Steps** tab come from `GET /operator/v1/live`, polled once a second; the first poll returns the newest events and each next one only what is new (`after=<cursor>`). **Steps are recorded only while a page is open**: each poll keeps the recording on for 20 seconds, and a request checks that once when it starts. A request that began before the page opened is not drawn, though it is in **Calls**. With the page closed, the cost is one cheap check per request. At most 600 steps are kept.
+
+Only metadata appears: account, key, provider and model names, status codes, token counts and timings. Never prompts, replies or keys, whatever `request_log_prompts` says.
+
+### Testing a key
+
+After adding a key, check that it answers: **Test** on its row in Pool Keys (or the API) sends one tiny real request through it, using the same endpoint and model mapping as live traffic, and reports the result.
+
+```bash
+curl -X POST http://localhost:8000/v1/operator/pool/keys/KEY_ID/test   -H "Authorization: Bearer $OPERATOR_KEY"   -H "Content-Type: application/json"   -d '{"model": "gpt-4o-mini"}'   # optional: defaults to the key's first model
+```
+
+The answer is always `200` with `ok` and a `verdict`: `ok`, `key_rejected` (the provider refused the key), `model_not_found`, `no_credits`, `rate_limited` (the key works but is limited right now), `unreachable` (wrong base URL or server down), `timeout`, `provider_error` or `bad_request`. It also carries `latency_ms`, the short `reply` and `tokens` on success, and on failure the provider's own words in `detail` with key-shaped strings removed. A test is a diagnostic, not traffic: nothing is settled, counted in usage or statistics, and no key or model state changes, even when the provider refuses. It costs one request of a few tokens at the provider, and each run is audited as `pool_key.test`.
+
+**Which models can this key really use?** A provider's model list says what exists, not what your account may call: some models need a paid balance, a plan or an allow-list (Z.ai, for example, answers `429 Insufficient balance or no resource package` for its paid models while its free ones work). **Test all models** in the Test dialog (`POST /v1/operator/pool/keys/{key_id}/test-models`) sends one tiny request per model of the key, three at a time, and lists which answered and why the rest did not. **Keep only the working models** then removes the failing ones from the key. At most 30 models are tested per run; a refused request costs nothing, so only the working models spend a few tokens. To check a model that is not listed, add it to the key with Edit first. The gateway holds no list of free or paid models of its own: it asks the provider.
 
 ### Syncing a key's limits with OpenRouter
 
@@ -368,7 +475,7 @@ The numbers above are examples, not a statement of any provider's allowance.
 - Only `daily_cap` is enforced. `token_cap` is shown on the dashboard as an indicator and never blocks a key. Tokens from streams whose provider reports none are not counted.
 - Requests made with the same key outside the gateway are not counted. The provider's own refusal still marks the key and fails over.
 - There are no per-user tiers. All accounts share `PALIMPSEST_USER_DAILY_CAP`; you can override one account until the next UTC midnight. Any account can use any served model.
-- With no capacity left, clients get `503 pool_exhausted`.
+- With no capacity left, clients get `429 pool_exhausted` with `Retry-After`. The gateway answers it before taking the session lock or charging the user's daily cap.
 
 ### Using it responsibly
 
@@ -459,8 +566,9 @@ All errors use the OpenAI envelope. Branch on `code`; treat `message` as human-f
 
 | Code | Status | Meaning |
 | :--- | :--- | :--- |
-| `pool_exhausted` | 503 | No key had routable capacity. Retry after the next reset. |
-| `budget_exhausted` | 503 | The retry budget ran out before any candidate succeeded. |
+| `pool_exhausted` | 429 | No key had routable capacity. Wait for `Retry-After`, then retry. |
+| `budget_exhausted` | 429 | The retry budget ran out and every key tried was rate-limited or out of quota. The message says how many keys were tried. Wait for `Retry-After`. |
+| `budget_exhausted` | 503 | The retry budget ran out on other failures (outages, timeouts). |
 | `provider_unavailable` | 503 | The provider call failed non-fatally and could not be recovered. |
 | `service_unavailable` | 503 | Redis was unreachable at the admission gate. |
 | `pool_unavailable` | 503 | The pool store was unreachable. |
@@ -480,7 +588,8 @@ All errors use the OpenAI envelope. Branch on `code`; treat `message` as human-f
 | `X-Request-ID` | every response | Correlates the response with the request log and settlement record. |
 | `X-Session-ID` | chat responses | The session the turn was bound to. |
 | `X-Palimpsest-Retry-Count` | failover and exhaustion errors | How many candidates were attempted. |
-| `X-Palimpsest-Next-Reset` | `pool_exhausted` | When the next key is expected to recover. |
+| `X-Palimpsest-Next-Reset` | `pool_exhausted`, `budget_exhausted` | When the next key is expected to recover. |
+| `Retry-After` | `429` responses | Seconds to wait before retrying: until a key recovers, or until the user's daily cap resets. |
 
 These carry retry counts and reset times only — never provider names, key hints or key ids.
 
@@ -609,6 +718,8 @@ The running version is shown in the dashboard's **System** section and in `GET /
 **Chat requests fail but the dashboard works** — expected without a provider key. Set `PALIMPSEST_PROVIDER_API_KEY`, or add a pool key through the Operator API. Everything else works without one.
 
 **You cannot sign in to the dashboard** — you need an operator key, not a user key. The generated one is at `docker compose exec app cat /app/.secrets/operator_key`; create your own under Accounts.
+
+**Throttled on the dashboard** — requests refused for lack of capacity (`pool_exhausted`, a rate-limited `budget_exhausted`, or a user cap) are counted as *throttled*, not as errors, and leave the error and success rates alone. A client that retries before its `Retry-After` is counted once; its further tries only add to *repeats* (Performance section).
 
 **Every request returns `pool_exhausted`** — no usable key. Check `GET /v1/operator/pool/utilization`. Keys sitting in `cooldown` or `exhausted` are skipped; resume them or add keys. If a master model is set, make sure some key still serves it.
 

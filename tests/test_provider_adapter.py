@@ -469,3 +469,59 @@ async def test_attempt_passes_a_timeout_litellm_accepts(
         global_timeout=None,
         supports_httpx_timeout=lambda _provider: True,
     )
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("provider", "model", "expected"),
+    [
+        (Provider.ZAI, "glm-4.5", {"max_tokens": 300}),
+        (Provider.GROQ, "llama-3.3-70b-versatile", {"max_tokens": 300}),
+        (Provider.OPENAI, "gpt-5", {"max_completion_tokens": 300}),
+    ],
+)
+async def test_max_completion_tokens_is_sent_under_the_name_the_provider_takes(
+    registry: PoolRegistry, monkeypatch: pytest.MonkeyPatch, provider, model, expected
+):
+    record = await registry.create(KeyCreate(provider=provider, models=[model], key=f"mct-{provider}"))
+    calls = []
+
+    async def fake_acompletion(**kwargs):
+        calls.append(kwargs)
+        return _FakeModelResponse()
+
+    monkeypatch.setattr(adapter_module, "acompletion", fake_acompletion)
+
+    await attempt(
+        registry, record.id, model, [{"role": "user", "content": "hi"}], max_completion_tokens=300
+    )
+
+    sent = {k: calls[0][k] for k in ("max_tokens", "max_completion_tokens") if k in calls[0]}
+    assert sent == expected
+    assert calls[0]["drop_params"] is True
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("extra", "expected"),
+    [
+        ({"seed": 7}, True),
+        ({"tools": [{"type": "function", "function": {"name": "f"}}]}, False),
+        ({"tool_choice": "auto"}, False),
+    ],
+)
+async def test_unsupported_params_are_dropped_except_when_the_request_uses_tools(
+    registry: PoolRegistry, monkeypatch: pytest.MonkeyPatch, extra, expected
+):
+    record = await registry.create(KeyCreate(provider=Provider.GROQ, models=["m"], key="dp-key"))
+    calls = []
+
+    async def fake_acompletion(**kwargs):
+        calls.append(kwargs)
+        return _FakeModelResponse()
+
+    monkeypatch.setattr(adapter_module, "acompletion", fake_acompletion)
+
+    await attempt(registry, record.id, "m", [{"role": "user", "content": "hi"}], **extra)
+
+    assert calls[0]["drop_params"] is expected

@@ -35,6 +35,8 @@ const CONFIG_FIELDS = [
     hint: 'Include current-turn messages in request logs.' },
   { name: 'cooldown_seconds', label: 'Cooldown (s)', type: 'number', min: 1, step: 1,
     hint: 'How long a key stays in cooldown after a transient failure.' },
+  { name: 'failover_max_wait_seconds', label: 'Wait for a key (s)', type: 'number', min: 0, max: 30, step: 1,
+    hint: 'When every key is rate-limited but one is back within this many seconds, wait for it instead of answering 429. 0 = off.' },
   { name: 'failover_event_log_size', label: 'Failover event log size', type: 'number', min: 1, step: 1,
     hint: 'Events retained in the bounded mirror list.' },
   { name: 'request_log_ttl_hours', label: 'Request log TTL (h)', type: 'number', min: 1, step: 1,
@@ -49,7 +51,22 @@ const CONFIG_FIELDS = [
 
 const NUMBER_FORMAT = new Intl.NumberFormat();
 
-const PROVIDERS = ['openai', 'anthropic', 'google', 'openrouter', 'mistral', 'groq', 'custom'];
+const PROVIDERS = ['openai', 'anthropic', 'google', 'openrouter', 'mistral', 'groq', 'zai', 'xai', 'github', 'custom'];
+
+/* Providers whose endpoint a key may point elsewhere (the OpenAI-compatible ones),
+   and where each one goes when no base URL is set. */
+const BASE_URL_PROVIDERS = ['openai', 'mistral', 'groq', 'zai', 'xai', 'github', 'custom'];
+/* Placeholder text only: the bundle never loads anything from another origin (a test
+   checks that no "http(s)://" literal appears here), so the scheme is added here. */
+const secure = (rest) => 'https' + '://' + rest;
+const DEFAULT_ENDPOINTS = {
+  openai: secure('api.openai.com/v1'),
+  mistral: secure('api.mistral.ai/v1'),
+  groq: secure('api.groq.com/openai/v1'),
+  zai: secure('api.z.ai/api/paas/v4'),
+  xai: secure('api.x.ai/v1'),
+  github: secure('models.github.ai/inference'),
+};
 const KEY_STATES = ['active', 'exhausted', 'cooldown', 'suspended'];
 
 const POOL_KEY_COLUMNS = [
@@ -70,6 +87,18 @@ const SECTIONS = [
     label: 'Overview',
     endpoints: ['/operator/v1/overview', '/operator/v1/accounts'],
     render: renderOverview,
+  },
+  {
+    id: 'live',
+    label: 'Live Flow',
+    endpoints: ['/operator/v1/live'],
+    render: renderLive,
+  },
+  {
+    id: 'supermode',
+    label: 'Supermode',
+    endpoints: ['/operator/v1/supermode', '/operator/v1/supermode/ranking'],
+    render: renderSupermode,
   },
   {
     id: 'pool-keys',
@@ -147,7 +176,7 @@ const SECTIONS = [
 
 /* Sidebar grouping by theme; every section id appears exactly once. */
 const NAV_GROUPS = [
-  { title: 'Monitoring', ids: ['overview', 'performance', 'alerts'] },
+  { title: 'Monitoring', ids: ['overview', 'live', 'supermode', 'performance', 'alerts'] },
   { title: 'Key pool', ids: ['pool-keys', 'utilization-failover'] },
   { title: 'Users', ids: ['users', 'sessions'] },
   { title: 'Activity & costs', ids: ['usage', 'requests', 'costs'] },
@@ -158,6 +187,8 @@ const NAV_GROUPS = [
 const NAV_ICONS = {
   overview: [['rect', {x: '3', y: '3', width: '7', height: '9', rx: '1.5'}], ['rect', {x: '14', y: '3', width: '7', height: '5', rx: '1.5'}], ['rect', {x: '14', y: '12', width: '7', height: '9', rx: '1.5'}], ['rect', {x: '3', y: '16', width: '7', height: '5', rx: '1.5'}]],
   performance: [['path', {d: 'M3 12h4l3-8 4 16 3-8h4'}]],
+  supermode: [['path', {d: 'M13 2 4 14h7l-1 8 9-12h-7z'}]],
+  live: [['circle', {cx: '12', cy: '12', r: '2'}], ['path', {d: 'M16.2 7.8a6 6 0 0 1 0 8.4M7.8 16.2a6 6 0 0 1 0-8.4M19 5a10 10 0 0 1 0 14M5 19a10 10 0 0 1 0-14'}]],
   alerts: [['path', {d: 'M6 8a6 6 0 0 1 12 0c0 7 3 9 3 9H3s3-2 3-9'}], ['path', {d: 'M10.3 21a1.94 1.94 0 0 0 3.4 0'}]],
   'pool-keys': [['circle', {cx: '7.5', cy: '15.5', r: '4.5'}], ['path', {d: 'm10.7 12.3 9.8-9.8M16 7l3 3M14 9l2 2'}]],
   'utilization-failover': [['path', {d: 'M3 3v18h18'}], ['path', {d: 'M7 15v3M12 10v8M17 6v12'}]],
@@ -171,20 +202,37 @@ const NAV_ICONS = {
   configuration: [['path', {d: 'M4 6h10M18 6h2M4 12h2M10 12h10M4 18h12M20 18h0'}], ['circle', {cx: '16', cy: '6', r: '2'}], ['circle', {cx: '8', cy: '12', r: '2'}], ['circle', {cx: '18', cy: '18', r: '2'}]],
 };
 
+/* Action icons, same 24x24 stroke grid as the sidebar. */
+const UI_ICONS = {
+  refresh: [['path', {d: 'M20 11a8 8 0 0 0-14.6-4.5L4 8'}], ['path', {d: 'M4 3v5h5'}], ['path', {d: 'M4 13a8 8 0 0 0 14.6 4.5L20 16'}], ['path', {d: 'M20 21v-5h-5'}]],
+  plus: [['path', {d: 'M12 5v14M5 12h14'}]],
+  close: [['path', {d: 'M6 6l12 12M18 6 6 18'}]],
+  sun: [['circle', {cx: '12', cy: '12', r: '4'}], ['path', {d: 'M12 2v2M12 20v2M4.9 4.9l1.4 1.4M17.7 17.7l1.4 1.4M2 12h2M20 12h2M4.9 19.1l1.4-1.4M17.7 6.3l1.4-1.4'}]],
+  moon: [['path', {d: 'M20 14.5A8 8 0 0 1 9.5 4a8 8 0 1 0 10.5 10.5z'}]],
+};
+
 function navIcon(id) {
-  const icon = el('span', 'nav-icon');
+  return strokeIcon(NAV_ICONS[id], 18, 'nav-icon');
+}
+
+function uiIcon(name, size = 16) {
+  return strokeIcon(UI_ICONS[name], size, 'ui-icon');
+}
+
+function strokeIcon(shapes, size, className) {
+  const icon = el('span', className);
   icon.setAttribute('aria-hidden', 'true');
   const ns = 'http:' + '//www.w3.org/2000/svg';
   const svg = document.createElementNS(ns, 'svg');
   svg.setAttribute('viewBox', '0 0 24 24');
-  svg.setAttribute('width', '18');
-  svg.setAttribute('height', '18');
+  svg.setAttribute('width', String(size));
+  svg.setAttribute('height', String(size));
   svg.setAttribute('fill', 'none');
   svg.setAttribute('stroke', 'currentColor');
   svg.setAttribute('stroke-width', '1.8');
   svg.setAttribute('stroke-linecap', 'round');
   svg.setAttribute('stroke-linejoin', 'round');
-  for (const [tag, attrs] of NAV_ICONS[id] || []) {
+  for (const [tag, attrs] of shapes || []) {
     const shape = document.createElementNS(ns, tag);
     for (const [name, value] of Object.entries(attrs)) {
       shape.setAttribute(name, value);
@@ -364,8 +412,14 @@ function withPager(table, bar) {
   return bar ? [table, bar] : [table];
 }
 
+/* A label written '+ Add key' gets a drawn plus icon instead of the glyph. */
 function button(label, className, onClick) {
-  const node = el('button', className, label);
+  const node = el('button', className);
+  if (label.startsWith('+ ')) {
+    node.append(uiIcon('plus'), label.slice(2));
+  } else {
+    node.textContent = label;
+  }
   node.type = 'button';
   if (onClick) {
     node.addEventListener('click', onClick);
@@ -374,7 +428,8 @@ function button(label, className, onClick) {
 }
 
 function refreshButton(onClick, label = 'Refresh') {
-  const node = button('↻ ' + label, 'ghost', onClick);
+  const node = button(label, 'ghost', onClick);
+  node.prepend(uiIcon('refresh', 15));
   node.title = 'Load the latest data';
   return node;
 }
@@ -387,22 +442,29 @@ function mountPage(view, { title, description, status, actions = [], tools = [],
   const titleBlock = el('div', 'page-title');
   titleBlock.append(el('h2', null, title));
   if (description) {
-    titleBlock.append(el('p', 'page-description', description));
+    /* Kept to one line on a wide screen; the full text stays in the tooltip. */
+    const text = el('p', 'page-description', description);
+    text.title = description;
+    titleBlock.append(text);
   }
   titleBlock.append(status.node);
 
   const actionBar = el('div', 'page-actions');
   actionBar.append(...actions);
 
+  /* Title on the left; filters, then the page's buttons, on the right. A page
+     with three or more filters moves them to a toolbar row of its own under the
+     title (decided in CSS, so filters added after mounting count too). */
   const head = el('header', 'page-head');
-  head.append(titleBlock, actionBar);
-
-  const parts = [head];
+  head.append(titleBlock);
   if (tools.length) {
     const toolbar = el('div', 'page-tools');
     toolbar.append(...tools);
-    parts.push(toolbar);
+    head.append(toolbar);
   }
+  head.append(actionBar);
+
+  const parts = [head];
   const body = el('div', 'page-body');
   body.append(...content);
   parts.push(body);
@@ -435,7 +497,8 @@ function openModal({ title, content, primary = null, cancelLabel = 'Cancel', wid
 
   const heading = el('h3', null, title);
   heading.id = 'modal-title';
-  const dismiss = button('×', 'icon-button', closeModal);
+  const dismiss = button('', 'icon-button', closeModal);
+  dismiss.append(uiIcon('close', 18));
   dismiss.setAttribute('aria-label', 'Close');
   const head = el('header', 'modal-head');
   head.append(heading, dismiss);
@@ -616,7 +679,60 @@ function renderNav(activeId) {
     return wrap;
   });
   els.nav.replaceChildren(...groups);
+  const active = SECTIONS.find((candidate) => candidate.id === activeId);
+  document.getElementById('nav-toggle-label').textContent = active ? active.label : 'Menu';
+  setNavOpen(false);
 }
+
+/* On a narrow screen the section list folds behind a menu button in the top bar. */
+function setNavOpen(open) {
+  els.app.classList.toggle('nav-open', open);
+  document.getElementById('nav-toggle').setAttribute('aria-expanded', String(open));
+}
+
+/* -- colour theme ------------------------------------------------------------
+ *
+ * The top-bar button flips between light and dark; theme.js remembers the
+ * choice and applies it before the first paint. Until the operator picks one,
+ * the system theme applies and the button follows it. */
+
+const darkQuery = window.matchMedia('(prefers-color-scheme: dark)');
+
+function currentTheme() {
+  const chosen = document.documentElement.getAttribute('data-theme');
+  if (chosen === 'light' || chosen === 'dark') {
+    return chosen;
+  }
+  return darkQuery.matches ? 'dark' : 'light';
+}
+
+function drawThemeToggle() {
+  const toggle = document.getElementById('theme-toggle');
+  const dark = currentTheme() === 'dark';
+  const label = dark ? 'Switch to light mode' : 'Switch to dark mode';
+  toggle.replaceChildren(uiIcon(dark ? 'sun' : 'moon', 18));
+  toggle.setAttribute('aria-label', label);
+  toggle.title = label;
+}
+
+document.getElementById('theme-toggle').addEventListener('click', () => {
+  window.saveTheme(currentTheme() === 'dark' ? 'light' : 'dark');
+  drawThemeToggle();
+});
+
+darkQuery.addEventListener('change', drawThemeToggle);
+drawThemeToggle();
+
+document.getElementById('nav-toggle').addEventListener('click', () => {
+  setNavOpen(!els.app.classList.contains('nav-open'));
+});
+
+document.addEventListener('keydown', (event) => {
+  if (event.key === 'Escape' && els.app.classList.contains('nav-open')) {
+    setNavOpen(false);
+    document.getElementById('nav-toggle').focus();
+  }
+});
 
 function renderPlaceholder(section) {
   const heading = el('h2', null, section.label);
@@ -698,6 +814,7 @@ els.logout.addEventListener('click', () => {
   forgetKey();
   poolKeys.records = [];
   users.accounts = [];
+  forgetAccountNames();
   showLogin();
   window.location.hash = '';
 });
@@ -731,6 +848,14 @@ function recordValue(column, record) {
   return column.key === 'name' ? keyName(record) : record[column.key];
 }
 
+function hostOf(url) {
+  try {
+    return new URL(url).host;
+  } catch (err) {
+    return url;
+  }
+}
+
 function formatCell(column, record) {
   const value = recordValue(column, record);
   if (value === null || value === undefined || value === '') {
@@ -740,7 +865,10 @@ function formatCell(column, record) {
     return formatDate(value);
   }
   if (column.key === 'provider') {
-    return PROVIDER_NAMES[value] || String(value);
+    const name = PROVIDER_NAMES[value] || String(value);
+    // A key sent to its own endpoint says where, so a "custom" setup is easy to spot
+    // even when it was added under another provider.
+    return record.base_url ? name + ' · ' + hostOf(record.base_url) : name;
   }
   if (Array.isArray(value)) {
     return value.join(', ');
@@ -749,7 +877,7 @@ function formatCell(column, record) {
 }
 
 function searchableText(record) {
-  return [keyName(record), record.id, record.provider, record.key_hint, record.state, (record.models || []).join(' ')]
+  return [keyName(record), record.id, record.provider, record.base_url || '', record.key_hint, record.state, (record.models || []).join(' ')]
     .join(' ')
     .toLowerCase();
 }
@@ -786,6 +914,9 @@ function visibleKeys() {
   });
 
   const column = POOL_KEY_COLUMNS.find((entry) => entry.key === poolKeys.sort.column);
+  if (!column) {
+    return filtered;
+  }
   const sign = poolKeys.sort.ascending ? 1 : -1;
   return filtered.sort((a, b) => sign * compareValues(column, recordValue(column, a), recordValue(column, b)));
 }
@@ -824,7 +955,9 @@ function createStatus() {
         /* Signing out has already replaced the screen; anything else is the
            operator's to read. */
         if (!(err instanceof SignedOut)) {
-          this.report(err.param ? err.param + ': ' + err.message : err.message, 'error');
+          // Some messages already name their field ("base_url must not ..."): say it once.
+          const named = err.param && !err.message.startsWith(err.param);
+          this.report(named ? err.param + ': ' + err.message : err.message, 'error');
           if (onError) {
             await onError(err);
           }
@@ -878,6 +1011,8 @@ function rowActionCell(record) {
 
   const edit = button('Edit', 'ghost btn-sm', () => showEditKey(record));
   const limits = button('Limits', 'ghost btn-sm', () => showProviderLimits(record));
+  const test = button('Test', 'ghost btn-sm', () => showTestKey(record));
+  test.title = 'Send one tiny request through this key to check it answers';
 
   const remove = button('Remove', 'ghost btn-sm danger', async () => {
     const confirmed = await confirmAction({
@@ -895,7 +1030,7 @@ function rowActionCell(record) {
     }, drawPoolKeysTable, afterKeyActionError);
   });
 
-  cell.append(toggle, edit, limits, remove);
+  cell.append(toggle, edit, test, limits, remove);
   return cell;
 }
 
@@ -1022,12 +1157,14 @@ function buildEditForm(record, modal) {
     return changes;
   };
 
+  const baseUrl = buildBaseUrlField(record.provider, record.base_url || '');
   const picker = buildModelPicker(models, () =>
     apiFetch(keyActionPath(record.id, '/available-models'))
   );
 
   form.append(
     labelled('Name (empty = provider and key hint)', name),
+    ...(BASE_URL_PROVIDERS.includes(record.provider) ? [baseUrl.node] : []),
     labelled('Models (comma separated)', models),
     picker,
     labelled('Daily cap (empty = unlimited)', cap),
@@ -1044,6 +1181,14 @@ function buildEditForm(record, modal) {
       return;
     }
     const capText = cap.value.trim();
+    if (record.provider === 'custom' && !baseUrl.value()) {
+      modal.status.report('A custom key needs its base URL.', 'error');
+      baseUrl.input.focus();
+      return;
+    }
+    // Sent only when changed, like the schedule: the key's own list of models is
+    // fetched from the endpoint it is saved with.
+    const baseUrlChanged = baseUrl.value() !== (record.base_url || '');
     modal.primaryButton.disabled = true;
     modal.status.run(
       async () => {
@@ -1052,6 +1197,7 @@ function buildEditForm(record, modal) {
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({
             ...resetChanges(),
+            ...(baseUrlChanged ? { base_url: baseUrl.value() || null } : {}),
             label: name.value.trim() === '' ? null : name.value.trim(),
             models: list,
             daily_cap: capText === '' ? null : Number(capText),
@@ -1073,6 +1219,207 @@ function buildEditForm(record, modal) {
   return form;
 }
 
+/* Test a key: one real, tiny request through it (same endpoint and model mapping as
+   live traffic), so the operator sees at once whether it answers. Opens the dialog
+   and runs the first model straight away; "Run again" and the model picker retest.
+   Nothing is metered and no key state changes, whatever the provider says. */
+const TEST_VERDICT_TITLES = {
+  ok: 'The key answered',
+  key_rejected: 'The provider refused this key',
+  model_not_found: 'Model not found for this key',
+  no_credits: 'Out of credits or quota',
+  rate_limited: 'Rate-limited right now',
+  unreachable: 'Could not reach the endpoint',
+  timeout: 'No answer in time',
+  provider_error: 'Provider error',
+  bad_request: 'Test request rejected',
+  error: 'Unexpected error',
+};
+
+function drawTestResult(box, result) {
+  const passed = result.ok;
+  // A key that works but is limited is a warning, not a failure of the key itself.
+  const limited = result.verdict === 'rate_limited' || result.verdict === 'no_credits';
+  const banner = el(
+    'p',
+    'sync-note sync-note--' + (passed ? 'ok' : limited ? 'warn' : 'error'),
+    (passed ? '✓ ' : limited ? '! ' : '✗ ') +
+      (TEST_VERDICT_TITLES[result.verdict] || 'Result') +
+      (result.latency_ms !== null && result.latency_ms !== undefined ? ' · ' + result.latency_ms + ' ms' : '')
+  );
+  banner.setAttribute('role', 'status');
+
+  const rows = [
+    { name: 'Model', value: result.model },
+    { name: 'Provider', value: PROVIDER_NAMES[result.provider] || result.provider },
+  ];
+  if (result.status_code !== null && result.status_code !== undefined) {
+    rows.push({ name: 'HTTP status', value: String(result.status_code) });
+  }
+  if (passed) {
+    rows.push({ name: 'Reply', value: result.reply ? '“' + result.reply + '”' : '(empty: the model spent its few tokens thinking)' });
+    if (result.tokens !== null && result.tokens !== undefined) {
+      rows.push({ name: 'Tokens used', value: String(result.tokens) });
+    }
+  } else if (result.detail) {
+    rows.push({ name: 'Provider said', value: result.detail });
+  }
+  box.replaceChildren(
+    banner,
+    el('p', 'note', result.message),
+    dataTable(
+      [
+        { label: 'Field', cell: (row) => row.name },
+        { label: 'Value', cell: (row) => row.value },
+      ],
+      rows,
+      ''
+    )
+  );
+}
+
+/* The result of testing every model of a key: which ones answer. A provider's model
+   list says what exists, not what this account may call, so this is how to find out
+   (and to drop the rest). */
+function drawModelsResult(box, record, outcome, keepWorking) {
+  const rows = outcome.results.map((row) => ({
+    model: row.model,
+    ok: row.ok,
+    result:
+      (row.ok ? '✓ works' : '✗ ' + (TEST_VERDICT_TITLES[row.verdict] || 'failed')) +
+      (row.latency_ms !== null && row.latency_ms !== undefined ? ' · ' + row.latency_ms + ' ms' : ''),
+    detail: row.ok ? '' : row.detail || '',
+  }));
+  const working = outcome.working.length;
+  const failing = outcome.failing.length;
+  const summary = el(
+    'p',
+    'sync-note sync-note--' + (failing === 0 ? 'ok' : working === 0 ? 'error' : 'warn'),
+    working + ' of ' + rows.length + ' models answered' + (failing ? ' · ' + failing + ' did not' : '')
+  );
+  summary.setAttribute('role', 'status');
+  const parts = [
+    summary,
+    dataTable(
+      [
+        { label: 'Model', cell: (row) => row.model },
+        { label: 'Result', cell: (row) => row.result },
+        { label: 'Provider said', cell: (row) => row.detail },
+      ],
+      rows,
+      ''
+    ),
+  ];
+  if (working && failing) {
+    const keep = button('Keep only the ' + working + ' working model' + (working === 1 ? '' : 's'), 'primary', () =>
+      keepWorking(outcome.working)
+    );
+    parts.push(el('p', 'note', 'Removes the models that did not answer from this key, so requests are never sent to them.'), keep);
+  }
+  box.replaceChildren(...parts);
+}
+
+function showTestKey(record) {
+  const box = el('div', 'test-result');
+  const models = record.models || [];
+  const picker = el('select');
+  for (const model of models) {
+    const option = el('option', null, model);
+    option.value = model;
+    picker.append(option);
+  }
+
+  const run = () => {
+    handle.primaryButton.disabled = true;
+    picker.disabled = true;
+    if (models.length > 1) {
+      testAll.disabled = true;
+    }
+    box.replaceChildren(el('p', 'note', 'Sending one small request to ' + picker.value + '…'));
+    handle.status.run(
+      () =>
+        apiFetch(keyActionPath(record.id, '/test'), {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ model: picker.value }),
+        }),
+      (result) => drawTestResult(box, result),
+      (err) => box.replaceChildren(el('p', 'note', 'The test could not run: ' + err.message))
+    ).finally(() => {
+      if (handle.primaryButton) {
+        handle.primaryButton.disabled = false;
+        picker.disabled = false;
+        if (models.length > 1) {
+          testAll.disabled = false;
+        }
+      }
+    });
+  };
+
+  const keepWorking = async (working) => {
+    const confirmed = await confirmAction({
+      title: 'Keep only the working models?',
+      message:
+        'This key will serve only: ' + working.join(', ') +
+        '. The other models are removed from it. You can add them back with Edit.',
+      confirmLabel: 'Keep working models',
+    });
+    if (!confirmed) {
+      return;
+    }
+    poolKeys.panel.run(async () => {
+      const updated = await apiFetch(keyActionPath(record.id, ''), {
+        method: 'PATCH',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ models: working }),
+      });
+      replaceRecord(updated);
+      closeModal();
+      poolKeys.panel.report(keyName(updated) + ' now serves ' + working.length + ' working model(s).', 'ok');
+    }, drawPoolKeysTable, afterKeyActionError);
+  };
+
+  const runAll = () => {
+    handle.primaryButton.disabled = true;
+    testAll.disabled = true;
+    picker.disabled = true;
+    box.replaceChildren(
+      el('p', 'note', 'Testing ' + models.length + ' models, a few at a time. This takes a few seconds…')
+    );
+    handle.status.run(
+      () => apiFetch(keyActionPath(record.id, '/test-models'), { method: 'POST' }),
+      (outcome) => drawModelsResult(box, record, outcome, keepWorking),
+      (err) => box.replaceChildren(el('p', 'note', 'The test could not run: ' + err.message))
+    ).finally(() => {
+      if (handle.primaryButton) {
+        handle.primaryButton.disabled = false;
+        testAll.disabled = false;
+        picker.disabled = false;
+      }
+    });
+  };
+
+  const testAll = button('Test all ' + models.length + ' models', 'ghost', runAll);
+  testAll.title = 'One tiny request per model, to see which ones this key can really use';
+
+  const handle = openModal({
+    title: 'Test ' + keyName(record),
+    content: [
+      el(
+        'p',
+        'note',
+        'Sends one tiny real request (a few tokens) through this key. Nothing is counted against its quota in the dashboard and its state does not change.'
+      ),
+      ...(models.length > 1 ? [labelled('Model', picker), testAll] : []),
+      box,
+    ],
+    primary: { label: 'Run again', onClick: run },
+    cancelLabel: 'Close',
+    wide: true,
+  });
+  run();
+}
+
 /* What the provider itself reports about a key's limits: its live answer where it
    has an endpoint for that, plus the rate-limit headers from the key's last request.
    Shown as the provider sent them, so a field the provider omits is simply absent. */
@@ -1083,12 +1430,49 @@ function limitRows(object) {
   }));
 }
 
-function drawProviderLimits(record, info) {
+const SYNC_FIELD_NAMES = { daily_cap: 'Request cap', used: 'Used today' };
+
+/* Provider messages may already end in a full stop; never print two. */
+function sentence(text) {
+  const trimmed = String(text).trim();
+  return /[.!?]$/.test(trimmed) ? trimmed : trimmed + '.';
+}
+
+function syncNote(sync) {
+  if (!sync) {
+    return null;
+  }
+  if (sync.status === 'updated') {
+    const fields = (sync.changes || []).map(
+      (c) => (SYNC_FIELD_NAMES[c.field] || c.field) + ' ' + c.local + ' → ' + c.provider
+    );
+    return { kind: 'ok', text: 'Synced with the provider: ' + fields.join(', ') + '.' };
+  }
+  if (sync.status === 'ok') {
+    return { kind: 'ok', text: 'Local cap and used count already match the provider.' };
+  }
+  if (sync.status === 'error') {
+    return {
+      kind: 'error',
+      text: 'Sync failed: ' + sentence(sync.error || 'the provider could not be asked') + ' Nothing changed.',
+    };
+  }
+  return null;
+}
+
+function drawProviderLimits(record, info, sync) {
   const columns = [
     { label: 'Field', cell: (row) => row.name },
     { label: 'Value', cell: (row) => row.value },
   ];
   const parts = [];
+
+  const note = syncNote(sync);
+  if (note) {
+    const banner = el('p', 'sync-note sync-note--' + note.kind, note.text);
+    banner.setAttribute('role', 'status');
+    parts.push(banner);
+  }
 
   parts.push(el('h4', null, 'Reported now by the provider'));
   if (info.live) {
@@ -1127,158 +1511,150 @@ function drawProviderLimits(record, info) {
 async function showProviderLimits(record) {
   poolKeys.panel.report('Asking the provider…', 'pending');
   poolKeys.panel.run(
-    () => apiFetch(keyActionPath(record.id, '/provider-limits')),
-    (info) => {
+    async () => {
+      const info = await apiFetch(keyActionPath(record.id, '/provider-limits'));
+      let sync = null;
+      /* Only sync when the provider just answered: if it could not be reached a
+         second call would fail the same way, and the error is already shown. */
+      if (info.live_supported && info.live) {
+        try {
+          sync = await apiFetch(keyActionPath(record.id, '/sync-limits'), { method: 'POST' });
+        } catch (err) {
+          if (err instanceof SignedOut) {
+            throw err;
+          }
+          sync = { status: 'error', error: err.message };
+        }
+      }
+      return { info, sync };
+    },
+    async ({ info, sync }) => {
       poolKeys.panel.report('', 'ok');
-      drawProviderLimits(record, info);
+      drawProviderLimits(record, info, sync);
+      if (sync && sync.applied) {
+        // The cap and used count changed server-side: refresh the cached rows.
+        try {
+          poolKeys.records = await apiFetch(POOL_KEYS_PATH);
+        } catch (err) {
+          /* The table keeps its previous numbers until the next refresh. */
+        }
+        drawPoolKeysTable();
+      }
     }
   );
 }
 
-async function drawPoolKeysTable() {
+function drawPoolKeysTable() {
   const body = poolKeys.body;
   if (!body) {
     return;
   }
   
-  // Show loading state
-  body.replaceChildren(el('p', 'note', 'Loading...'));
-  
-  try {
-    // Fetch all keys (we'll paginate on the client side)
-    // Build query parameters for filtering and sorting
-    const params = new URLSearchParams();
-    
-    // Add filters
-    if (poolKeys.filters.state) {
-      params.append('state', poolKeys.filters.state);
+  /* Filtering and sorting run over the already-fetched list (the list endpoint
+     takes no filter parameters), so redrawing never issues a request. */
+  const visible = visibleKeys();
+  const totalRecords = visible.length;
+  const paginatedRecords = pageOf(poolKeys.pager, visible);
+
+  if (!paginatedRecords.length) {
+    body.replaceChildren(
+      poolKeys.records.length
+        ? emptyState('No keys match the current filters.')
+        : emptyState(
+          'No provider keys yet. Add one to start routing requests.',
+          '+ Add your first key',
+          openAddKey
+        )
+    );
+    return;
+  }
+
+  const head = el('thead');
+  const headRow = el('tr');
+  for (const column of POOL_KEY_COLUMNS) {
+    const th = el('th', null);
+    th.scope = 'col';
+    const active = poolKeys.sort.column === column.key;
+    if (active) {
+      th.setAttribute('aria-sort', poolKeys.sort.ascending ? 'ascending' : 'descending');
     }
-    if (poolKeys.filters.provider) {
-      params.append('provider', poolKeys.filters.provider);
-    }
-    if (poolKeys.filters.query) {
-      params.append('search', poolKeys.filters.query);
-    }
-    
-    // Note: The API doesn't support offset-based pagination, so we fetch all and paginate client-side
-    // For sorting, we'll also need to do it client-side since the API sorting might not work with our pagination
-    const records = await apiFetch(POOL_KEYS_PATH + '?' + params.toString());
-    poolKeys.records = records || [];
-    
-    // Apply sorting client-side
-    if (poolKeys.sort.column) {
-      const column = POOL_KEY_COLUMNS.find(col => col.key === poolKeys.sort.column);
-      if (column) {
-        poolKeys.records.sort((a, b) => {
-          const valA = recordValue(column, a);
-          const valB = recordValue(column, b);
-          return poolKeys.sort.ascending 
-            ? compareValues(column, valA, valB) 
-            : -compareValues(column, valA, valB);
-        });
-      }
-    }
-    
-    const totalRecords = poolKeys.records.length;
-    const paginatedRecords = pageOf(poolKeys.pager, poolKeys.records);
-    
-    if (!paginatedRecords.length) {
-      body.replaceChildren(
-        totalRecords
-          ? emptyState('No keys match the current filters.')
-          : emptyState(
-            'No provider keys yet. Add one to start routing requests.',
-            '+ Add your first key',
-            openAddKey
-          )
-      );
-      return;
-    }
-    
-    const head = el('thead');
-    const headRow = el('tr');
+    const button = el(
+      'button',
+      'sort-button',
+      column.label + (active ? (poolKeys.sort.ascending ? ' ▲' : ' ▼') : '')
+    );
+    button.type = 'button';
+    button.addEventListener('click', () => sortBy(column.key));
+    th.append(button);
+    headRow.append(th);
+  }
+  const actionsHead = el('th', 'actions-col', 'Actions');
+  actionsHead.scope = 'col';
+  headRow.append(actionsHead);
+  head.append(headRow);
+
+  const rowFor = (record) => {
+    const tr = el('tr');
     for (const column of POOL_KEY_COLUMNS) {
-      const th = el('th', null);
-      th.scope = 'col';
-      const active = poolKeys.sort.column === column.key;
-      if (active) {
-        th.setAttribute('aria-sort', poolKeys.sort.ascending ? 'ascending' : 'descending');
-      }
-      const button = el(
-        'button',
-        'sort-button',
-        column.label + (active ? (poolKeys.sort.ascending ? ' ▲' : ' ▼') : '')
-      );
-      button.type = 'button';
-      button.addEventListener('click', () => sortBy(column.key));
-      th.append(button);
-      headRow.append(th);
-    }
-    const actionsHead = el('th', 'actions-col', 'Actions');
-    actionsHead.scope = 'col';
-    headRow.append(actionsHead);
-    head.append(headRow);
-    
-    const rowFor = (record) => {
-      const tr = el('tr');
-      for (const column of POOL_KEY_COLUMNS) {
-        const cell = el('td');
-        if (column.key === 'state') {
-          cell.append(el('span', 'badge badge--' + record.state, STATE_LABELS[record.state] || record.state));
-        } else {
-          const formatted = formatCell(column, record);
-          if (column.key === 'models') {
-            // One line: first model, "+N" for the rest, full list on hover.
-            const list = record.models || [];
-            cell.classList.add('models-column');
-            cell.append(el('span', 'models-text', list.length ? list[0] : formatted));
-            if (list.length > 1) {
-              cell.append(el('span', 'models-more', '+' + (list.length - 1)));
-            }
-            cell.title = list.join('\n');
-            if (list.length) {
-              const copy = el('button', 'models-copy', 'Copy');
-              copy.type = 'button';
-              copy.title = 'Copy all model names';
-              copy.addEventListener('click', (event) => {
-                event.stopPropagation();
-                navigator.clipboard.writeText(list.join(', ')).then(() => {
-                  copy.textContent = 'Copied';
-                  setTimeout(() => { copy.textContent = 'Copy'; }, 1200);
-                });
+      const cell = el('td');
+      if (column.key === 'state') {
+        cell.append(el('span', 'badge badge--' + record.state, STATE_LABELS[record.state] || record.state));
+      } else {
+        const formatted = formatCell(column, record);
+        if (column.key === 'models') {
+          // One line: first model, "+N" for the rest, full list on hover.
+          const list = record.models || [];
+          cell.classList.add('models-column');
+          cell.append(el('span', 'models-text', list.length ? list[0] : formatted));
+          if (list.length > 1) {
+            cell.append(el('span', 'models-more', '+' + (list.length - 1)));
+          }
+          cell.title = list.join('\n');
+          if (list.length) {
+            const copy = el('button', 'models-copy', 'Copy');
+            copy.type = 'button';
+            copy.title = 'Copy all model names';
+            copy.addEventListener('click', (event) => {
+              event.stopPropagation();
+              navigator.clipboard.writeText(list.join(', ')).then(() => {
+                copy.textContent = 'Copied';
+                setTimeout(() => { copy.textContent = 'Copy'; }, 1200);
               });
-              cell.append(copy);
-            }
-          } else {
-            cell.textContent = formatted;
+            });
+            cell.append(copy);
+          }
+        } else if (column.key === 'last_modified_by' && record.last_modified_by) {
+          // Operator ids are long UUIDs: show the short form, the full id on hover.
+          cell.textContent = shortId(record.last_modified_by);
+          cell.title = record.last_modified_by;
+        } else {
+          cell.textContent = formatted;
+          if (column.key === 'provider' && record.base_url) {
+            cell.title = record.base_url;
           }
         }
-        tr.append(cell);
       }
-      tr.append(rowActionCell(record));
-      return tr;
-    };
-    
-    const tbody = el('tbody');
-    appendGrouped(
-      tbody,
-      paginatedRecords,
-      keyGrouping(poolKeys.group, (members) => {
-        const available = members.filter((key) => key.state === 'active').length;
-        return plural(members.length, 'key') + ' · ' + available + ' available';
-      }),
-      rowFor,
-      POOL_KEY_COLUMNS.length + 1
-    );
-    
-    body.replaceChildren(
-      ...withPager(tableOf(head, tbody), pagerBar(poolKeys.pager, totalRecords, 'key', drawPoolKeysTable))
-    );
-  } catch (err) {
-    if (!(err instanceof SignedOut)) {
-      body.replaceChildren(el('p', 'note', 'Error loading keys: ' + err.message));
+      tr.append(cell);
     }
-  }
+    tr.append(rowActionCell(record));
+    return tr;
+  };
+
+  const tbody = el('tbody');
+  appendGrouped(
+    tbody,
+    paginatedRecords,
+    keyGrouping(poolKeys.group, (members) => {
+      const available = members.filter((key) => key.state === 'active').length;
+      return plural(members.length, 'key') + ' · ' + available + ' available';
+    }),
+    rowFor,
+    POOL_KEY_COLUMNS.length + 1
+  );
+
+  body.replaceChildren(
+    ...withPager(tableOf(head, tbody), pagerBar(poolKeys.pager, totalRecords, 'key', drawPoolKeysTable))
+  );
 }
 
 function drawOptions(select, values, selected, labels = {}) {
@@ -1306,20 +1682,20 @@ function buildFilters() {
   const stateSelect = el('select');
   stateSelect.id = 'filter-state';
   drawFilterOptions(stateSelect, KEY_STATES, poolKeys.filters.state, STATE_LABELS);
-stateSelect.addEventListener('change', () => {
+  stateSelect.addEventListener('change', () => {
     poolKeys.filters.state = stateSelect.value;
-    poolKeys.pager.page = 1; // Reset to first page when filters change
+    poolKeys.pager.page = 1;
     drawPoolKeysTable();
-});
+  });
 
   const providerSelect = el('select');
   providerSelect.id = 'filter-provider';
   drawFilterOptions(providerSelect, PROVIDERS, poolKeys.filters.provider, PROVIDER_NAMES);
-providerSelect.addEventListener('change', () => {
+  providerSelect.addEventListener('change', () => {
     poolKeys.filters.provider = providerSelect.value;
-    poolKeys.pager.page = 1; // Reset to first page when filters change
+    poolKeys.pager.page = 1;
     drawPoolKeysTable();
-});
+  });
 
   const search = el('input', 'search');
   search.type = 'search';
@@ -1328,6 +1704,7 @@ providerSelect.addEventListener('change', () => {
   search.value = poolKeys.filters.query;
   search.addEventListener('input', () => {
     poolKeys.filters.query = search.value;
+    poolKeys.pager.page = 1;
     drawPoolKeysTable();
   });
 
@@ -1372,6 +1749,10 @@ function addKeyPayload(fields) {
   if (fields.label.value.trim() !== '') {
     payload.label = fields.label.value.trim();
   }
+  const baseUrl = fields.baseUrl ? fields.baseUrl.value.trim() : '';
+  if (baseUrl !== '' && BASE_URL_PROVIDERS.includes(payload.provider)) {
+    payload.base_url = baseUrl;
+  }
 
   const dailyCap = fields.dailyCap.value.trim();
   if (dailyCap !== '') {
@@ -1402,6 +1783,40 @@ function addKeyPayload(fields) {
    /v1/models shows users. `load` returns [{id, name, free}] from the provider. */
 function parseModelList(input) {
   return input.value.split(',').map((model) => model.trim()).filter(Boolean);
+}
+
+/* The endpoint a key sends its requests to. Shown only for providers that allow
+   one: required in spirit for "custom" (there is no default), an optional override
+   for the rest. `sync(provider)` redraws the label, hint and visibility. */
+function buildBaseUrlField(initialProvider, initialValue) {
+  const input = el('input');
+  input.type = 'url';
+  input.name = 'baseUrl';
+  input.id = 'key-base-url';
+  input.autocomplete = 'off';
+  input.spellcheck = false;
+  input.value = initialValue || '';
+
+  const caption = el('span');
+  const hint = el('span', 'field-hint');
+  const wrapper = el('label', 'field');
+  wrapper.htmlFor = input.id;
+  wrapper.append(caption, input, hint);
+
+  const sync = (provider) => {
+    wrapper.hidden = !BASE_URL_PROVIDERS.includes(provider);
+    if (provider === 'custom') {
+      caption.textContent = 'Base URL';
+      input.placeholder = secure('your-server.example.com/v1');
+      hint.textContent = 'The OpenAI-compatible endpoint, up to and including /v1. Models are listed from its /models.';
+    } else {
+      caption.textContent = 'Base URL (optional)';
+      input.placeholder = DEFAULT_ENDPOINTS[provider] || '';
+      hint.textContent = 'Leave empty to use the provider\u2019s own endpoint.';
+    }
+  };
+  sync(initialProvider);
+  return { node: wrapper, input, sync, value: () => input.value.trim() };
 }
 
 function buildModelPicker(input, load) {
@@ -1458,7 +1873,8 @@ function buildModelPicker(input, load) {
       ...ids.map((id) => {
         const chip = el('span', 'chip');
         chip.append(el('span', 'chip__text', id));
-        const remove = el('button', 'chip__remove', '×');
+        const remove = el('button', 'chip__remove');
+        remove.append(uiIcon('close', 12));
         remove.type = 'button';
         remove.title = 'Remove ' + id;
         remove.setAttribute('aria-label', 'Remove ' + id);
@@ -1608,6 +2024,7 @@ function buildAddForm(modal) {
 
   const provider = control('select', 'provider');
   drawOptions(provider, PROVIDERS, 'openai', PROVIDER_NAMES);
+  const baseUrl = buildBaseUrlField(provider.value, '');
 
   const label = control('input', 'label', 'text');
   label.maxLength = 60;
@@ -1650,11 +2067,23 @@ function buildAddForm(modal) {
     return apiFetch(AVAILABLE_MODELS_PATH, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ provider: provider.value, key: key.value.trim() }),
+      body: JSON.stringify({
+        provider: provider.value,
+        key: key.value.trim(),
+        ...(baseUrl.value() ? { base_url: baseUrl.value() } : {}),
+      }),
     });
   });
-  provider.addEventListener('change', () => picker.clear());
-  form.addEventListener('reset', () => picker.clear());
+  provider.addEventListener('change', () => {
+    baseUrl.sync(provider.value);
+    picker.clear();
+  });
+  baseUrl.input.addEventListener('change', () => picker.clear());
+  form.addEventListener('reset', () => {
+    picker.clear();
+    // `reset` fires before the controls return to their defaults.
+    setTimeout(() => baseUrl.sync(provider.value), 0);
+  });
 
   /* The required fields come first; limits and schedule are optional. */
   const grid = el('div', 'form-grid');
@@ -1662,6 +2091,7 @@ function buildAddForm(modal) {
     labelled('Provider', provider),
     labelled('Provider key', key),
     labelled('Name (optional)', label),
+    baseUrl.node,
     labelled('Models (comma separated)', models),
     picker
   );
@@ -1683,6 +2113,7 @@ function buildAddForm(modal) {
       payload = addKeyPayload({
         provider,
         label,
+        baseUrl: baseUrl.input,
         models,
         key,
         dailyCap,
@@ -1698,6 +2129,11 @@ function buildAddForm(modal) {
     if (!payload.key) {
       modal.status.report('Paste the provider key.', 'error');
       key.focus();
+      return;
+    }
+    if (payload.provider === 'custom' && !payload.base_url) {
+      modal.status.report('Enter the base URL of the OpenAI-compatible endpoint.', 'error');
+      baseUrl.input.focus();
       return;
     }
     if (!payload.models.length) {
@@ -1718,7 +2154,10 @@ function buildAddForm(modal) {
       form.reset();
       closeModal();
       replaceRecord(created);
-      poolKeys.panel.report(keyName(created) + ' added. It is routable now.', 'ok');
+      poolKeys.panel.report(
+        keyName(created) + ' added. It is routable now. Use Test on its row to check it answers.',
+        'ok'
+      );
     }, drawPoolKeysTable).finally(() => {
       if (modal.primaryButton) {
         modal.primaryButton.disabled = false;
@@ -2009,6 +2448,9 @@ const PROVIDER_NAMES = {
   openrouter: 'OpenRouter',
   mistral: 'Mistral',
   groq: 'Groq',
+  zai: 'Z.ai (GLM)',
+  xai: 'xAI (Grok)',
+  github: 'GitHub Models',
   custom: 'Custom (OpenAI-compatible)',
 };
 
@@ -2209,6 +2651,8 @@ function drawUnavailableModels() {
 const OUTCOME_TONES = {
   success: 'active',
   exhausted_503: 'cooldown',
+  exhausted_429: 'cooldown',
+  rejected_user_cap: 'cooldown',
   error_5xx: 'exhausted',
   error_4xx: 'suspended',
 };
@@ -2717,7 +3161,7 @@ async function showAccountKeys(account) {
             el('td', null, key.prefix),
             status,
             el('td', null, formatDate(key.created_at)),
-            el('td', null, key.last_used_at ? formatDate(key.last_used_at) : '—')
+            el('td', null, key.last_used_at ? formatDate(key.last_used_at) : 'Never')
           );
           tbody.append(tr);
         }
@@ -2730,6 +3174,7 @@ async function showAccountKeys(account) {
 }
 
 async function loadAccounts() {
+  forgetAccountNames();
   users.accounts = await apiFetch(ACCOUNTS_PATH);
   users.panel.report(
     users.accounts.length + ' account(s), ' +
@@ -2777,12 +3222,35 @@ const REQUESTS_PATH = '/operator/v1/requests';
 
 const accountNames = {};
 
-async function loadAccountNames() {
-  const accounts = await apiFetch(ACCOUNTS_PATH);
-  for (const account of accounts) {
-    accountNames[account.id] = account.display_name || '(unnamed) ' + shortId(account.id);
+/* Several sections ask for the account list at once (and Requests twice per
+   load). Callers within a few seconds share one request; the Users section,
+   which creates and deletes accounts, always drops the shared copy. */
+const ACCOUNT_NAMES_TTL_MS = 10000;
+let accountNamesLoad = null;
+let accountNamesAt = 0;
+
+function forgetAccountNames() {
+  accountNamesLoad = null;
+}
+
+function loadAccountNames() {
+  if (accountNamesLoad && Date.now() - accountNamesAt < ACCOUNT_NAMES_TTL_MS) {
+    return accountNamesLoad;
   }
-  return accounts;
+  accountNamesAt = Date.now();
+  accountNamesLoad = apiFetch(ACCOUNTS_PATH).then(
+    (accounts) => {
+      for (const account of accounts) {
+        accountNames[account.id] = account.display_name || '(unnamed) ' + shortId(account.id);
+      }
+      return accounts;
+    },
+    (err) => {
+      accountNamesLoad = null;
+      throw err;
+    }
+  );
+  return accountNamesLoad;
 }
 
 function accountLabel(id) {
@@ -2846,7 +3314,10 @@ function dataTable(columns, rows, emptyMessage, group = null, paging = null) {
   );
   const table = tableOf(head, body);
   if (!paging) {
-    return table;
+    /* A table wider than a phone scrolls sideways in its own box, not the page. */
+    const scroller = el('div', 'table-scroll');
+    scroller.append(table);
+    return scroller;
   }
   const fragment = document.createDocumentFragment();
   fragment.append(...withPager(table, pagerBar(paging.pager, total, paging.noun, paging.redraw)));

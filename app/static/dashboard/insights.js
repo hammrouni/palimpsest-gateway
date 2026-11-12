@@ -61,7 +61,8 @@ function fmtMoney(value, currency) {
   if (value === null || value === undefined) {
     return '—';
   }
-  const digits = Math.abs(value) < 1 ? 4 : 2;
+  // Sub-dollar spend needs more precision, but zero reads better as 0.00.
+  const digits = value !== 0 && Math.abs(value) < 1 ? 4 : 2;
   try {
     return new Intl.NumberFormat(undefined, {
       style: 'currency',
@@ -174,9 +175,15 @@ function trendChart(labels, series, { kind = 'line', height = 190, format = fmtC
   }
   const labelEvery = Math.max(1, Math.ceil(count / 7));
   labels.forEach((label, index) => {
-    if (index % labelEvery === 0 || index === count - 1) {
+    const last = index === count - 1;
+    // A regular tick too close to the always-shown last label would overlap it.
+    const crowded = !last && count - 1 - index < labelEvery / 2;
+    if ((index % labelEvery === 0 && !crowded) || last) {
+      /* On a line chart the last point sits on the right edge: anchor its label
+         there so it is not cut off. */
+      const anchor = kind === 'line' && last && count > 1 ? 'end' : 'middle';
       svg.append(
-        svgEl('text', { x: x(index), y: height - 6, class: 'chart-axis', 'text-anchor': 'middle' }, label)
+        svgEl('text', { x: x(index), y: height - 6, class: 'chart-axis', 'text-anchor': anchor }, label)
       );
     }
   });
@@ -342,6 +349,30 @@ function exportButton(label, path, filename, state) {
 
 const overview = { panel: null, body: null, days: '7', data: null };
 
+/* Requests the pool took on: throttled refusals (no capacity, or a user cap)
+   are neither successes nor failures. */
+function handledOf(totals) {
+  return totals.handled !== undefined ? totals.handled : totals.requests - (totals.throttled || 0);
+}
+
+function successNote(totals) {
+  if (!totals.requests) {
+    return 'no traffic';
+  }
+  const note = NUMBER_FORMAT.format(totals.ok) + ' of ' + NUMBER_FORMAT.format(handledOf(totals)) + ' clean';
+  return totals.throttled ? note + ' · ' + NUMBER_FORMAT.format(totals.throttled) + ' throttled' : note;
+}
+
+/* Requests, real failures, and capacity refusals as three lines: a burst of
+   rate limits shows as throttled, not as errors. */
+function trafficSeries(rows) {
+  return [
+    { label: 'Requests', values: rows.map((row) => row.requests) },
+    { label: 'Errors', values: rows.map((row) => row.errors_4xx + row.errors_5xx) },
+    { label: 'Throttled', values: rows.map((row) => row.throttled || 0) },
+  ];
+}
+
 function drawOverview() {
   const data = overview.data;
   const t = data.totals;
@@ -364,7 +395,7 @@ function drawOverview() {
   const summary = el('div', 'summary overview-summary');
   summary.append(
     kpiCard('Requests', fmtCompact(t.requests), deltaNote(t.requests, prev.requests)),
-    kpiCard('Success rate', fmtPct(t.success_rate), t.requests ? NUMBER_FORMAT.format(t.ok) + ' of ' + NUMBER_FORMAT.format(t.requests) + ' clean' : 'no traffic'),
+    kpiCard('Success rate', fmtPct(t.success_rate), successNote(t)),
     kpiCard('Errors', fmtCompact(errors), deltaNote(errors, prevErrors, false)),
     kpiCard('Latency p50 / p95', fmtMs(t.p50_ms) + ' / ' + fmtMs(t.p95_ms), 'avg ' + fmtMs(t.avg_latency_ms)),
     kpiCard('Tokens', fmtCompact(tokensNow), deltaNote(tokensNow, tokensPrev)),
@@ -387,11 +418,8 @@ function drawOverview() {
   const labels = data.daily.map((day) => day.day.slice(5));
   nodes.push(
     panelSection(
-      'Requests and errors per day',
-      trendChart(labels, [
-        { label: 'Requests', values: data.daily.map((day) => day.requests) },
-        { label: 'Errors', values: data.daily.map((day) => day.errors_4xx + day.errors_5xx) },
-      ])
+      'Requests, errors and throttled per day',
+      trendChart(labels, trafficSeries(data.daily))
     ),
     panelSection(
       'Tokens per day',
@@ -515,7 +543,11 @@ function drawPerformance() {
     kpiCard('Latency p95', fmtMs(t.p95_ms), 'p99 ' + fmtMs(t.p99_ms)),
     kpiCard('Avg first token', fmtMs(t.avg_ttft_ms), 'streaming requests only'),
     kpiCard('Error rate', fmtPct(t.error_rate), NUMBER_FORMAT.format(t.errors_4xx) + ' client · ' + NUMBER_FORMAT.format(t.errors_5xx) + ' server'),
-    kpiCard('Pool exhausted', NUMBER_FORMAT.format(t.exhausted), 'requests answered 503'),
+    kpiCard(
+      'Throttled',
+      NUMBER_FORMAT.format(t.throttled || 0),
+      NUMBER_FORMAT.format(t.repeats || 0) + ' repeat(s) within Retry-After not counted'
+    ),
     kpiCard('Served after failover', NUMBER_FORMAT.format(t.failovers), t.requests ? fmtPct(t.failovers / t.requests) + ' of requests' : '')
   );
   nodes.push(summary);
@@ -585,10 +617,7 @@ function drawPerformance() {
       'Last 48 hours',
       trendChart(
         hourly.slice(-48).map((row) => new Date(row.hour).getUTCHours() + 'h'),
-        [
-          { label: 'Requests', values: hourly.slice(-48).map((row) => row.requests) },
-          { label: 'Errors', values: hourly.slice(-48).map((row) => row.errors_4xx + row.errors_5xx) },
-        ]
+        trafficSeries(hourly.slice(-48))
       )
     ),
     panelSection('Busiest hours (last 14 days, UTC)', trafficHeatmap(hourly))
@@ -1164,7 +1193,11 @@ async function showUserDetail(accountId) {
     summary.append(
       kpiCard('Requests (30d)', fmtCompact(t.requests), data.display_name || shortId(data.account_id)),
       kpiCard('Tokens (30d)', fmtCompact(t.prompt_tokens + t.completion_tokens), plural(data.models.length, 'model')),
-      kpiCard('Error rate', t.requests ? fmtPct(errors / t.requests) : '—', NUMBER_FORMAT.format(errors) + ' failed'),
+      kpiCard(
+        'Error rate',
+        handledOf(t) ? fmtPct(errors / handledOf(t)) : '—',
+        NUMBER_FORMAT.format(errors) + ' failed · ' + NUMBER_FORMAT.format(t.throttled || 0) + ' throttled'
+      ),
       kpiCard('Latency p95', fmtMs(t.p95_ms || null), ''),
       kpiCard('Est. cost (30d)', data.cost.total ? fmtMoney(data.cost.total, data.cost.currency) : '—', data.cost.unpriced_tokens ? 'some models unpriced' : ''),
       kpiCard('Sessions / keys', data.session_count + ' / ' + data.key_count, 'last used ' + (data.last_used_at ? formatDate(data.last_used_at) : 'never'))
@@ -1183,10 +1216,7 @@ async function showUserDetail(accountId) {
         'Requests per day',
         trendChart(
           data.daily.map((day) => day.day.slice(5)),
-          [
-            { label: 'Requests', values: data.daily.map((day) => day.requests) },
-            { label: 'Errors', values: data.daily.map((day) => day.errors_4xx + day.errors_5xx) },
-          ]
+          trafficSeries(data.daily)
         )
       ),
       panelSection(

@@ -23,7 +23,7 @@ dependencies = [
     "uvicorn>=0.27.0",
     "pydantic>=2.5.0",
     "pydantic-settings>=2.0.0",
-    "redis>=5.0.0",
+    "redis[hiredis]>=5.0.0",
     "litellm>=1.40.0",
     "fastuuid>=0.14.0",
     "cryptography==50.0.0",
@@ -60,7 +60,7 @@ include = ["app*"]
 # declarations a non-editable install ships without them, and settlement
 # cannot find its scripts at all.
 "app.settlement" = ["*.lua"]
-"app" = ["static/dashboard/*", "static/dashboard/icons/*"]
+"app" = ["static/dashboard/*", "static/dashboard/icons/*", "static/dashboard/fonts/*"]
 
 [tool.ruff]
 target-version = "py311"

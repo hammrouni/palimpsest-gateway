@@ -74,6 +74,7 @@ class PoolKeyRecordResponse(BaseModel):
     daily_cap: float | None = None
     token_cap: int | None = None
     label: str | None = None
+    base_url: str | None = None
     state: str
     operator_id: str | None = None
     last_modified_by: str | None = None

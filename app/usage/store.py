@@ -28,7 +28,7 @@ from datetime import UTC, datetime, timedelta
 from typing import Any
 
 from app.config import get_settings
-from app.usage.stats import StatsStore
+from app.usage.stats import THROTTLED_OUTCOMES, StatsStore
 
 logger = logging.getLogger("palimpsest.usage")
 
@@ -42,6 +42,14 @@ _MAX_RANGE_DAYS = 366
 # Outcomes where a provider served the request, so the model string is trusted.
 SERVED_OUTCOMES = frozenset({"success", "success_persist_failed", "stream_interrupted"})
 _CLEAN_OUTCOMES = frozenset({"success", "success_persist_failed"})
+
+# A throttled client that retries inside its Retry-After window is one event, not
+# one per retry: the first refusal sets this marker, later ones only count as
+# repeats. The marker never outlives the window, and is capped so a long wait
+# (a daily cap) still shows up again from time to time.
+_THROTTLE_MARK = "usage:throttled:{account}:{model}"
+_THROTTLE_MARK_DEFAULT_S = 60
+_THROTTLE_MARK_MAX_S = 900
 
 _pending: set[asyncio.Task] = set()
 
@@ -113,12 +121,25 @@ class UsageStore:
         provider: str | None = None,
         key_id: str | None = None,
         ttft_ms: int | None = None,
+        retry_after_s: int | None = None,
         now: datetime | None = None,
     ) -> None:
-        """Append one recent-request record and, if served, bump the day counters."""
+        """Append one recent-request record and, if served, bump the day counters.
+
+        A throttled outcome (see ``THROTTLED_OUTCOMES``) repeated by the same
+        account for the same model within ``retry_after_s`` is only counted as a
+        repeat: no recent-request entry, no request or error count.
+        """
         settings = get_settings()
         now = now or datetime.now(UTC)
         model = model[:_MODEL_MAX]
+        if outcome in THROTTLED_OUTCOMES:
+            ttl = retry_after_s if retry_after_s and retry_after_s > 0 else _THROTTLE_MARK_DEFAULT_S
+            marker = _THROTTLE_MARK.format(account=account_id, model=model)
+            first = await self.redis.set(marker, "1", nx=True, ex=min(ttl, _THROTTLE_MARK_MAX_S))
+            if not first:
+                await StatsStore(self.redis).record_repeat(account_id=account_id, now=now)
+                return
         known = prompt_tokens is not None and completion_tokens is not None
         record = {
             "timestamp": now.isoformat(),

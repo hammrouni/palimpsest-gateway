@@ -6,8 +6,10 @@ single-attempt transport only.
 """
 from __future__ import annotations
 
+import asyncio
 import logging
 import time
+from collections.abc import Callable
 from dataclasses import dataclass
 from datetime import UTC, datetime
 
@@ -21,14 +23,25 @@ from app.router.classify import (
     Classification,
     classify,
     is_connectivity_error,
+    model_quota_limit,
     pause_reason,
 )
 from app.router.exhaustion import PoolExhaustedError
+from app.router.learning import (
+    needs_from_params,
+    note_attempt,
+    record_failure,
+    record_success,
+)
 from app.router.rebuild import RebuildHook, identity_rebuild
 from app.router.retry_hint import get_quota_reset_seconds, retry_after_seconds
 from app.router.selection import select
+from app.usage.store import track
 
 logger = logging.getLogger("palimpsest.failover")
+
+# How much of a stream-start error is kept for classification (logs cut it shorter).
+_STREAM_ERROR_CHARS = 8000
 
 SYSTEM_OPERATOR_ID = "gateway:auth_rejected"
 """``last_modified_by`` on a key the gateway suspended after a 401/403."""
@@ -104,7 +117,9 @@ async def _prime_stream(result: AttemptResult, provider: Provider) -> AttemptRes
         error = ProviderAttemptError(
             status if isinstance(status, int) else None,
             "stream_start_error",
-            str(getattr(exc, "message", exc))[:500],
+            # Long enough for the provider's details: Google names the model a
+            # quota belongs to only after ~450 characters of preamble.
+            str(getattr(exc, "message", exc))[:_STREAM_ERROR_CHARS],
             provider,
         )
         return AttemptResult(ok=False, error=error, headers=result.headers)
@@ -132,6 +147,9 @@ class AttemptRecord:
     outcome: str  # "success" | "failed" | "skipped"
     status_code: int | None
     timestamp: float | None = None
+    # The model asked of that key and how long the attempt took; for the call history.
+    model: str | None = None
+    ms: int | None = None
 
 
 @dataclass(frozen=True)
@@ -145,6 +163,16 @@ class FailoverTrace:
     classification: Classification | None = None
     start_time: float | None = None
     end_time: float | None = None
+
+
+def _notify(observer: Callable[[dict], None] | None, event: dict) -> None:
+    """Tell the live view about an attempt; whatever it does cannot touch the request."""
+    if observer is None:
+        return
+    try:
+        observer(event)
+    except Exception:
+        logger.debug("live observer failed", exc_info=True)
 
 
 async def _earliest_next_reset(registry: PoolRegistry, model: str) -> datetime | None:
@@ -187,6 +215,44 @@ async def _exhausted(
     return error
 
 
+async def _short_wait(
+    registry: PoolRegistry, model: str, waited: float, deadline: float
+) -> float | None:
+    """Seconds to wait for a paused key serving ``model``, or None to give up.
+
+    Only when ``failover_max_wait_seconds`` allows it, the key is back within
+    what is left of that allowance, and the wait ends before the loop deadline.
+    """
+    allowance = get_settings().failover_max_wait_seconds - waited
+    if allowance <= 0:
+        return None
+    available = await registry.next_available_at(model)
+    if available is None:
+        return None
+    # A small margin so the marker has expired when we look again.
+    seconds = max(0.05, (available - datetime.now(UTC)).total_seconds() + 0.05)
+    if seconds > allowance or time.monotonic() + seconds >= deadline:
+        return None
+    return seconds
+
+
+async def capacity_refusal(registry: PoolRegistry, model: str) -> PoolExhaustedError | None:
+    """A ready ``pool_exhausted`` refusal when no key can serve ``model`` now.
+
+    Checked before the request is admitted, so a client retrying while the pool
+    is empty is answered at once: no admission charge, no session lock, no
+    history read. None when a key is available, or will be within
+    ``failover_max_wait_seconds`` (the loop then waits for it).
+    """
+    if await select(registry, model) is not None:
+        return None
+    start = time.monotonic()
+    deadline = start + get_settings().provider_timeout * 2
+    if await _short_wait(registry, model, 0.0, deadline) is not None:
+        return None
+    return await _exhausted(registry, model, "pool_exhausted", [], 0, start)
+
+
 async def execute_with_failover(
     registry: PoolRegistry,
     model: str,
@@ -195,6 +261,8 @@ async def execute_with_failover(
     session: object | None = None,
     rebuild_hook: RebuildHook | None = None,
     first_byte_committed: bool = False,
+    observer: Callable[[dict], None] | None = None,
+    deadline: float | None = None,
     **params: object,
 ) -> tuple[AttemptResult, FailoverTrace]:
     """Run the bounded failover loop for one logical request.
@@ -205,6 +273,14 @@ async def execute_with_failover(
     with ``.trace`` attached, when no key is left or the budget is spent.
 
     The whole loop stops once ``2 * provider_timeout`` seconds have passed.
+
+    ``deadline`` (a ``time.monotonic()`` instant) caps the loop earlier than its own
+    bound; a caller that runs the loop for several models passes one shared deadline
+    so the whole request stays inside it.
+
+    ``observer``, if given, is called (never awaited, errors ignored) with an
+    ``attempt`` event before each provider call and a ``result`` event after it,
+    for the live view; it cannot change the outcome.
     """
     hook = rebuild_hook or identity_rebuild
     settings = get_settings()
@@ -213,10 +289,15 @@ async def execute_with_failover(
     excluded: set[str] = set()
     attempts: list[AttemptRecord] = []
     retry_count = 0
+    waited = 0.0
     preferred_provider: Provider | None = None
     start_time = time.monotonic()
     # Bounds the whole loop, so one request cannot hold the session lock for minutes.
+    # What the request needs, worked out once: the learning notes use it on every attempt.
+    needs = needs_from_params(messages, params)
     total_deadline = start_time + settings.provider_timeout * 2
+    if deadline is not None:
+        total_deadline = min(total_deadline, deadline)
 
     while True:
         if time.monotonic() >= total_deadline:
@@ -231,10 +312,24 @@ async def execute_with_failover(
                 registry, model, excluded=frozenset(excluded), preferred_provider=preferred_provider
             )
         if candidate is None:
+            pause = await _short_wait(registry, model, waited, total_deadline)
+            if pause is not None:
+                # A key is back in a moment: wait rather than refuse. Keys that
+                # failed are still held back by their own pause markers.
+                await asyncio.sleep(pause)
+                waited += pause
+                excluded.clear()
+                continue
             raise await _exhausted(
                 registry, model, "pool_exhausted", attempts, retry_count, start_time
             )
 
+        track(note_attempt(registry.redis, candidate.key_id))
+        _notify(observer, {
+            "kind": "attempt", "n": len(attempts) + 1, "key_id": candidate.key_id,
+            "provider": candidate.provider.value, "model": model,
+        })
+        attempt_started = time.monotonic()
         try:
             result = await adapter_attempt(registry, candidate.key_id, model, messages, **params)
         except CandidateGoneError:
@@ -254,7 +349,18 @@ async def execute_with_failover(
         if result.ok and params.get("stream"):
             result = await _prime_stream(result, candidate.provider)
 
+        attempt_ms = int((time.monotonic() - attempt_started) * 1000)
+        _notify(observer, {
+            "kind": "result", "key_id": candidate.key_id, "provider": candidate.provider.value,
+            "model": model, "ok": result.ok,
+            "status_code": None if result.ok else result.error.status_code,
+            "classification": None if result.ok else classify(result.error).state,
+            "cause": None if result.ok else pause_reason(result.error),
+            "ms": attempt_ms,
+        })
+
         if result.ok:
+            track(record_success(registry.redis, model, candidate.key_id, needs))
             attempts.append(
                 AttemptRecord(
                     key_id=candidate.key_id,
@@ -263,6 +369,8 @@ async def execute_with_failover(
                     outcome="success",
                     status_code=None,
                     timestamp=time.monotonic(),
+                    model=model,
+                    ms=attempt_ms,
                 )
             )
             trace = FailoverTrace(
@@ -276,6 +384,11 @@ async def execute_with_failover(
         reason = pause_reason(result.error)
         pause_seconds: int | None = None
         connectivity = is_connectivity_error(result.error)
+        # Teach the gateway what blocked this attempt, so other requests avoid it.
+        track(record_failure(
+            registry.redis, model, candidate.key_id, needs,
+            result.error, classification.state, result.headers, connectivity,
+        ))
         try:
             if classification.state == "transient" and connectivity:
                 # We could not reach the provider (DNS, refused). The key and
@@ -303,9 +416,16 @@ async def execute_with_failover(
                 # The credential itself was refused: suspend it for the operator.
                 await registry.suspend(candidate.key_id, operator_id=SYSTEM_OPERATOR_ID)
             elif classification.state == "model_scoped":
-                # The key works but not for this model (404, or a model-scoped 403):
-                # skip this model on this key for 24 hours. The key stays active.
+                # The key works but not for this model (404, a model-scoped 403, or
+                # a quota the provider names per model): skip this model on this
+                # key. The key stays active for its other models.
                 pause_seconds = 86400  # 24 hours
+                quota = model_quota_limit(result.error)
+                if quota:
+                    # A real allowance that is spent: back when the provider says.
+                    pause_seconds = retry_after_seconds(
+                        result.error.message, result.headers
+                    ) or settings.cooldown_seconds
                 await registry.mark_cooldown(
                     candidate.key_id, model=model, seconds=pause_seconds, reason=reason
                 )
@@ -342,6 +462,8 @@ async def execute_with_failover(
                 outcome="failed",
                 status_code=result.error.status_code,
                 timestamp=time.monotonic(),
+                model=model,
+                ms=attempt_ms,
             )
         )
         excluded.add(candidate.key_id)
